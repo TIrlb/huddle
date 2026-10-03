@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.11.0';
+const APP_VERSION = '1.11.1';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -555,7 +555,11 @@ function navArrows(p) {
 }
 async function setupStage(p, mode) {
   const img = $('#stageImg');
-  img.onload = () => { fitStage(); renderTokens(); renderInk(); };
+  img.onload = () => {
+    const ar = +(img.naturalWidth / img.naturalHeight).toFixed(4);
+    if (p.ar !== ar) { p.ar = ar; save(); }
+    fitStage(); renderTokens(); renderInk();
+  };
   img.src = await blobUrl(p.imgId);
   bindStage(mode);
 }
@@ -569,7 +573,24 @@ function fitStage() {
   let w = Math.min(W, H * r); let h = w / r;
   w = Math.max(w, 100); h = Math.max(h, 60);
   stage.style.width = w + 'px'; stage.style.height = h + 'px';
-  stage.style.setProperty('--tk', clamp(Math.round(w * 0.062), 36, 76) + 'px');
+  stage.style.setProperty('--tk', (uniformTk(W, H) || clamp(Math.round(w * 0.062 * (S.tokenScale || 1)), 36, 90)) + 'px');
+}
+// one circle size for every player on every play: big enough to cover the markers in (nearly) all drawings
+function uniformTk(W, H) {
+  const px = [];
+  for (const p of S.plays) {
+    if (!p.ar) continue;
+    const ds = p.spots.filter(s => s.label !== 'C').map(s => s.d).filter(Boolean).sort((a, b) => a - b);
+    if (!ds.length) continue;
+    const sw = Math.max(100, Math.min(W, H * p.ar));
+    px.push(sw * ds[Math.floor((ds.length - 1) / 2)] / 100);
+  }
+  if (!px.length) return 0;
+  px.sort((a, b) => a - b);
+  // err on the large side: cover the biggest markers, unless one drawing is way out of line with the rest
+  const med = px[Math.floor((px.length - 1) / 2)];
+  const v = Math.min(px[px.length - 1], med * 1.45) * 1.05;
+  return clamp(Math.round(v * (S.tokenScale || 1)), 34, 130);
 }
 window.addEventListener('resize', () => { if (ui.view === 'play' || ui.view === 'edit') { fitStage(); renderTokens(); } });
 
@@ -585,13 +606,8 @@ function renderTokens() {
     return `<div class="token${sel}" data-spot="${sp.key}" style="left:${pos.x}%;top:${pos.y}%;${tk}">${disc(pl)}<span class="tpos">${esc(sp.label)}</span>${p.side === 'O' && pl.qb ? '<span class="tqb" title="Thrower">QB</span>' : ''}${p.side === 'D' && pl.safety ? '<span class="tqb tsaf" title="Safety">S</span>' : ''}</div>`;
   }).join('');
 }
-// player circles match the markers found in the drawing (sp.d = diameter as % of drawing width)
-function tokenSize(p, sp) {
-  const stage = $('#stage'); const w = stage ? stage.clientWidth : 0; if (!w) return '';
-  let d = sp.d; if (!d) { const ds = p.spots.map(x => x.d).filter(Boolean).sort((a, b) => a - b); d = ds[Math.floor(ds.length / 2)]; }
-  if (!d) return '';
-  return `--tk:${Math.max(26, Math.round(w * d / 100))}px`;
-}
+// every circle uses the stage's single --tk size (set in fitStage)
+function tokenSize() { return ''; }
 function renderBench() {
   const p = playById(ui.playId); const L = liveFor(p); const bench = $('#bench'); if (!bench) return;
   const onField = new Set(Object.values(L.lineup));
@@ -1261,6 +1277,52 @@ function morphClose(m, W, H, r) {
   };
   return pass(pass(pass(pass(m, true, false), false, false), true, true), false, true);
 }
+/* a marker with a route line or arrowhead running into it is one blob whose box is too big and off-center.
+   Find the solid round/square body(s) inside the blob instead: the deepest points of a distance map,
+   grown out until the shape thins to line width. Returns trimmed boxes (the blob itself when nothing is attached). */
+function coreBoxes(lab, c, W, H, minD, maxD) {
+  const bw = c.x1 - c.x0 + 1, bh = c.y1 - c.y0 + 1;
+  if (bw < minD || bh < minD || c.n < minD * minD * 0.4) return [];
+  if (bw <= maxD && bh <= maxD && bw / bh >= 0.5 && bw / bh <= 2.2 && bw * bh <= c.n * 1.9) return [c];  // clean shape: nothing to trim
+  // shape mask with holes (the letter) filled: outside = reachable from the box border without crossing the shape
+  const pw = bw + 2, ph = bh + 2, M = pw * ph; const out = new Uint8Array(M); const st = [0]; out[0] = 1;
+  const inC = k => { const x = k % pw - 1, y = ((k / pw) | 0) - 1; return x >= 0 && y >= 0 && x < bw && y < bh && lab[(c.y0 + y) * W + c.x0 + x] === c.id; };
+  while (st.length) { const k = st.pop(); const x = k % pw, y = (k / pw) | 0;
+    for (const n of [x > 0 ? k - 1 : -1, x < pw - 1 ? k + 1 : -1, y > 0 ? k - pw : -1, y < ph - 1 ? k + pw : -1]) if (n >= 0 && !out[n] && !inC(n)) { out[n] = 1; st.push(n); } }
+  // chamfer distance (3-4) to the outside
+  const D = new Uint16Array(M); for (let k = 0; k < M; k++) D[k] = out[k] ? 0 : 60000;
+  for (let y = 1; y < ph - 1; y++) for (let x = 1; x < pw - 1; x++) { const k = y * pw + x; if (!D[k]) continue;
+    D[k] = Math.min(D[k], D[k - 1] + 3, D[k - pw] + 3, D[k - pw - 1] + 4, D[k - pw + 1] + 4); }
+  for (let y = ph - 2; y > 0; y--) for (let x = pw - 2; x > 0; x--) { const k = y * pw + x; if (!D[k]) continue;
+    D[k] = Math.min(D[k], D[k + 1] + 3, D[k + pw] + 3, D[k + pw + 1] + 4, D[k + pw - 1] + 4); }
+  const filled = k => !out[k];
+  const res = []; const used = new Uint8Array(M);
+  for (let iter = 0; iter < 8; iter++) {
+    let best = 0, bk = -1; for (let k = 0; k < M; k++) if (!used[k] && D[k] > best) { best = D[k]; bk = k; }
+    const R = best / 3; if (bk < 0 || 2 * R < minD * 0.8) break;
+    // average the plateau of deepest points so a round shape centers properly
+    let sx = 0, sy = 0, sn = 0; const bx = bk % pw, by = (bk / pw) | 0, rr = Math.ceil(R);
+    for (let y = Math.max(0, by - rr); y <= Math.min(ph - 1, by + rr); y++) for (let x = Math.max(0, bx - rr); x <= Math.min(pw - 1, bx + rr); x++) { const k = y * pw + x; if (!used[k] && D[k] >= best - 2) { sx += x; sy += y; sn++; } }
+    const cx = Math.round(sx / sn), cy = Math.round(sy / sn);
+    // grow left/right while the shape is still taller than a line, and up/down while still wider than one
+    const colH = x => { let n = 0; for (let y = Math.max(0, Math.round(cy - R)); y <= Math.min(ph - 1, Math.round(cy + R)); y++) n += filled(y * pw + x); return n; };
+    const rowW = y => { let n = 0; for (let x = Math.max(0, Math.round(cx - R)); x <= Math.min(pw - 1, Math.round(cx + R)); x++) n += filled(y * pw + x); return n; };
+    const lim = 0.7 * R, far = Math.round(R * 2.6);
+    let xl = cx; while (xl > 0 && cx - xl < far && colH(xl - 1) >= lim) xl--;
+    let xr = cx; while (xr < pw - 1 && xr - cx < far && colH(xr + 1) >= lim) xr++;
+    let yt = cy; while (yt > 0 && cy - yt < far && rowW(yt - 1) >= lim) yt--;
+    let yb = cy; while (yb < ph - 1 && yb - cy < far && rowW(yb + 1) >= lim) yb++;
+    const pad = Math.max(1, Math.round(R * 0.06));
+    xl = Math.max(1, xl - pad); xr = Math.min(pw - 2, xr + pad); yt = Math.max(1, yt - pad); yb = Math.min(ph - 2, yb + pad);
+    for (let y = yt; y <= yb; y++) for (let x = xl; x <= xr; x++) used[y * pw + x] = 1;
+    // remove this body from the distance map, with a margin, before looking for the next one
+    for (let y = Math.max(0, yt - pad * 3); y <= Math.min(ph - 1, yb + pad * 3); y++) for (let x = Math.max(0, xl - pad * 3); x <= Math.min(pw - 1, xr + pad * 3); x++) used[y * pw + x] = 1;
+    const sub = { id: c.id, x0: c.x0 + xl - 1, y0: c.y0 + yt - 1, x1: c.x0 + xr - 1, y1: c.y0 + yb - 1, edge: c.edge, n: 0, trimmed: true };
+    for (let y = sub.y0; y <= sub.y1; y++) for (let x = sub.x0; x <= sub.x1; x++) if (lab[y * W + x] === c.id) sub.n++;
+    res.push(sub);
+  }
+  return res;
+}
 /* ---- find the player markers in a drawing ----
    Looks for shapes walled in by a dark outline, and for solid filled shapes (ovals/squares),
    then names them: the square is C, every other shape is named by the letter inside it (any color). */
@@ -1278,7 +1340,9 @@ async function detectMarkers(blob, side) {
     ink[i] = lum[i] < 228 || sat > 50 ? 1 : 0;            // method B: solid filled shapes (thin lines removed below)
   }
   const out = [];
-  const consider = (lab, c, allowEdge, src) => {
+  const minD = W * 0.03, maxD = W * 0.14;
+  const consider = (lab, c0, allowEdge, src) => { for (const c of coreBoxes(lab, c0, W, H, minD, maxD)) consider1(lab, c, allowEdge, src); };
+  const consider1 = (lab, c, allowEdge, src) => {
     if (c.edge && !allowEdge) return;
     const w = c.x1 - c.x0 + 1, h = c.y1 - c.y0 + 1;
     if (w < W * 0.03 || h < W * 0.03 || w > W * 0.14 || h > W * 0.14 || w / h < 0.5 || w / h > 2.2) return;
@@ -1385,8 +1449,15 @@ async function detectMarkers(blob, side) {
   for (const m of out) if (m.label && m.d < 3.5) m.label = null;                     // tiny: field numbers, legend text
   for (const m of out) if (m.label && md && m.d < md * 0.5 || (m.label && md && m.label !== 'C' && m.d < md * 0.75 && (m.score || 0) < 0.75)) m.label = null;
   // the center lines up with the QB
-  const qb = out.find(m => m.label === 'Q');
-  if (wantC) for (const m of out) if (m.label === 'C' && qb && Math.abs(m.x - qb.x) > 15) m.label = null;
+  // when they don't line up, one of them was misread: try another Q reading that lines up with the C,
+  // otherwise trust whichever read more clearly
+  const qb = out.find(m => m.label === 'Q'), cm = out.find(m => m.label === 'C');
+  if (wantC && qb && cm && Math.abs(cm.x - qb.x) > 15) {
+    const alt = pairs.filter(p => p.L === 'Q' && !p.m.label && Math.abs(p.m.x - cm.x) <= 15 && p.m.d >= (md || 0) * 0.6).sort((a, b) => b.sc - a.sc)[0];
+    if (alt) { qb.label = null; alt.m.label = 'Q'; alt.m.score = alt.sc; }
+    else if ((cm.score || 0) >= (qb.score || 0) + 0.05 && cm.square) qb.label = null;
+    else cm.label = null;
+  }
   // C: a square reading "C" (or unreadable), marker-sized, and lined up with the QB when the QB was found
   const q = out.find(m => m.label === 'Q');
   const cCands = !wantC || out.some(m => m.label === 'C') || !(md || q) ? [] : out.filter(m => !m.label && m.square && (!m.glyph || (m.glyphs?.length === 1 && m.scores.C >= 0.6 && m.scores.C >= Math.max(...'0123456789'.split('').map(d => m.scores[d]))))
@@ -1397,7 +1468,8 @@ async function detectMarkers(blob, side) {
   }
   // keep circle sizes sensible even when a marker's outline ran into a route line
   // one circle size per drawing: every player matches the typical marker; C may be a bit smaller
-  if (md) for (const m of out) if (m.label) m.d = +(m.label === 'C' ? Math.min(Math.max(m.d, md * 0.6), md) : md).toFixed(2);
+  if (md) for (const m of out) if (m.label) m.d = +md.toFixed(2);
+  out.ar = +(W / H).toFixed(4);
   return out;
 }
 // move a play's spots onto the markers found in its drawing; returns how many spots moved
@@ -1528,7 +1600,8 @@ async function autoPlace(play) {
   }
   if (n) play.spotsSet = true;
   // keep every circle on this play the same size, including positions that weren't found
-  if (marks.md) for (const sp of play.spots) sp.d = sp.label === 'C' ? +Math.min(sp.d || marks.md, marks.md).toFixed(2) : +marks.md.toFixed(2);
+  if (marks.ar) play.ar = marks.ar;
+  if (marks.md) for (const sp of play.spots) sp.d = +marks.md.toFixed(2);
   return n;
 }
 /* spot mirrored / repeated drawings: compare a coarse "ink mask" of each drawing with the one before it */
@@ -1720,6 +1793,9 @@ function renderSetup() {
         <label class="field"><span class="label">Defense</span><input type="text" data-poslist="D" value="${esc(posList('D').join(', '))}"></label>
       </div>
       <p class="help" style="margin:0">Comma-separated, in any order. Changing the list updates every play; positions that stay keep their spot. Repeat a name for two of the same (CB, CB).</p>
+      <div class="field"><span class="label">Player circle size (same on every play)</span>
+        <div class="seg seg-wrap">${[[0.85, 'Smaller'], [1, 'Auto'], [1.15, 'Larger'], [1.3, 'Largest']].map(([k, v]) => `<button type="button" class="${(S.tokenScale || 1) === k ? 'on' : ''}" data-act="tokenScale" data-k="${k}">${v}</button>`).join('')}</div>
+      </div>
       <div class="row-wrap"><button type="button" class="btn primary" data-act="autoPlaceAll">Find players on all plays</button>
         <span class="muted">Un-stretches drawings (the C box should be square), then moves each play's circles onto the markers: the square is C, every other shape is matched by the letter inside it. Plays where nothing is found are left alone.</span></div>
     </div>
@@ -2079,6 +2155,7 @@ const ACT = {
     if (!S.team || S.team === 'Team') S.team = b.dataset.name;
     save(); render(); toast(`${b.dataset.name} colors applied`);
   },
+  tokenScale: b => { S.tokenScale = +b.dataset.k; save(); renderSetup(); },
   lineupMode: b => { S.lineupMode = b.dataset.m; ui.live.clear(); save(); renderRoster(); },
   score: () => openScore(),
   addScore: b => {
