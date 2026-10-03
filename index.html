@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Huddle">
+<meta name="theme-color" content="#8f1426">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<title>Huddle Playbook</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <button type="button" class="brand" data-act="teams" aria-label="Switch team"><span class="brand-mark" aria-hidden="true"></span><span id="teamName">49ers</span><span class="caret" aria-hidden="true">▾</span></button>
+    <button type="button" class="scorebox" id="scorebox" data-act="score" aria-label="Score"></button>
+    <nav class="tabs" aria-label="Sections">
+      <button class="tab" data-act="nav" data-view="library">Plays</button>
+      <button class="tab" data-act="nav" data-view="roster">Roster</button>
+      <button class="tab" data-act="nav" data-view="stats">Stats</button>
+      <button class="tab" data-act="nav" data-view="setup">Setup</button>
+    </nav>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+  <main id="views">
+    <section id="view-library" class="view"></section>
+    <section id="view-play" class="view view-full" hidden></section>
+    <section id="view-edit" class="view view-full" hidden></section>
+    <section id="view-roster" class="view" hidden></section>
+    <section id="view-stats" class="view" hidden></section>
+    <section id="view-setup" class="view" hidden></section>
+  </main>
+</div>
+<div id="sheet" class="sheet" hidden><div class="sheet-card" id="sheetCard"></div></div>
+<div id="toast" class="toast" hidden></div>
+<input type="file" id="fileInput" hidden>
+<script src="vendor/jszip.min.js"></script>
+<script src="vendor/pdf.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
