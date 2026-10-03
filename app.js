@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.10.2';
+const APP_VERSION = '1.10.3';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -1338,6 +1338,7 @@ async function detectMarkers(blob, side) {
       // shape is a hint, not a rule: C is usually the square, but some playbooks draw everyone as squares
       const sc = m.scores[L] + (L === 'C' ? (m.square ? 0.08 : -0.2) : (m.square ? -0.05 : 0));
       if (m.scores[L] >= 0.65 && m.scores[L] >= maxOther - 0.06) pairs.push({ sc, m, L });
+      else if (L === 'Q' && !m.square && m.scores.Q >= 0.6 && 'OQ0D'.includes(m.best)) pairs.push({ sc: sc - 0.05, m, L });
     }
   }
   const room = {}; for (const L of posL) room[L] = Math.max(1, ...sides.map(sd => posList(sd).filter(x => x === L).length));
@@ -1355,7 +1356,7 @@ async function detectMarkers(blob, side) {
   if (wantC) for (const m of out) if (m.label === 'C' && qb && Math.abs(m.x - qb.x) > 15) m.label = null;
   // C: a square reading "C" (or unreadable), marker-sized, and lined up with the QB when the QB was found
   const q = out.find(m => m.label === 'Q');
-  const cCands = !wantC || out.some(m => m.label === 'C') ? [] : out.filter(m => !m.label && m.square && (!m.glyph || (m.scores.C >= 0.6 && 'COG0Q'.includes(m.best)))
+  const cCands = !wantC || out.some(m => m.label === 'C') ? [] : out.filter(m => !m.label && m.square && (!m.glyph || (m.scores.C >= 0.6 && m.scores.C >= Math.max(...'0123456789'.split('').map(d => m.scores[d]))))
     && (!md || (m.d >= md * 0.5 && m.d <= md * 1.5)) && (!q || Math.abs(m.x - q.x) < 15));
   if (cCands.length) {
     cCands.sort((a, b) => q ? Math.hypot(a.x - q.x, (a.y - q.y) / 2) - Math.hypot(b.x - q.x, (b.y - q.y) / 2) : (b.scores?.C || 0) - (a.scores?.C || 0));
@@ -1431,8 +1432,14 @@ function cleanMask(mask, mw, mh) {
     }
     sizes.push(n);
   }
-  const big = Math.max(0, ...sizes); const out = new Uint8Array(mask.length);
-  for (let i = 0; i < mask.length; i++) if (lab[i] >= 0 && sizes[lab[i]] >= big * 0.2) out[i] = 1;
+  // a route line crossing the marker runs off the edge of the box; a letter sits inside it
+  const edge = new Set(); for (let x = 0; x < mw; x++) { if (lab[x] >= 0) edge.add(lab[x]); if (lab[(mh - 1) * mw + x] >= 0) edge.add(lab[(mh - 1) * mw + x]); }
+  for (let y = 0; y < mh; y++) { if (lab[y * mw] >= 0) edge.add(lab[y * mw]); if (lab[y * mw + mw - 1] >= 0) edge.add(lab[y * mw + mw - 1]); }
+  const inner = sizes.map((n, id) => edge.has(id) ? 0 : n);
+  const useInner = Math.max(0, ...inner) >= Math.max(0, ...sizes) * 0.3;
+  const keep = useInner ? inner : sizes;
+  const big = Math.max(0, ...keep); const out = new Uint8Array(mask.length);
+  for (let i = 0; i < mask.length; i++) if (lab[i] >= 0 && keep[lab[i]] >= big * 0.2) out[i] = 1;
   return out;
 }
 function glyphGrid(mask, mw, mh) {
