@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.13.1';
+const APP_VERSION = '1.14.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -661,6 +661,8 @@ function renderHint() {
     h.className = 'hint active';
     h.innerHTML = `<span><b>${esc(player(ui.benchSel)?.name)}</b> is going in. Tap the player coming out.</span><button type="button" class="btn small ghost" data-act="clearSel">Cancel</button>`;
   } else {
+    const base = baseOf(p, L.groupId); const subs = base ? p.spots.filter(sp => { const bp = player(base[sp.key]); return bp && !bp.out && bp.groupId === L.groupId && base[sp.key] !== L.lineup[sp.key]; }).length : 0;
+    if (subs) { h.className = 'hint active'; h.innerHTML = `<span><b>${subs} spot${subs > 1 ? 's' : ''} changed for this snap.</b> The play's lineup comes back after LOG.</span><button type="button" class="btn small" data-act="keepNow">Keep for this play</button><button type="button" class="btn small ghost" data-act="backToBase">Undo subs</button>`; return; }
     h.className = 'hint';
     h.textContent = 'Tap a player to sub or swap. Drag a player onto another to swap them, or anywhere else to move their spot (Reset puts it back). Tap the field for full screen.';
   }
@@ -674,17 +676,35 @@ function keepSpot(key) {
   if (sp.ox == null) { sp.ox = sp.x; sp.oy = sp.y; }
   sp.x = +np.x.toFixed(2); sp.y = +np.y.toFixed(2); delete L.pos[key]; save();
 }
+/* each play keeps a practiced lineup per group (p.assign). Swapping spots changes it.
+   Subs from the bench (and Rotate, Take out, Out for today) are for this snap only once a lineup is set:
+   the practiced lineup comes back after LOG. Until a play has a lineup, the first changes set it. */
+function baseOf(p, gid) { const a = p.assign?.[gid]; return a && Object.keys(a).length ? a : null; }
 function keepLineup() {
   const p = playById(ui.playId); if (!p) return; const L = liveFor(p);
   p.assign ||= {}; p.assign[L.groupId] = { ...L.lineup }; save();
 }
+function keepSwap(a, b) {
+  const p = playById(ui.playId); const L = liveFor(p); const base = baseOf(p, L.groupId);
+  if (!base) return keepLineup();
+  const x = base[a], y = base[b];
+  if (y) base[a] = y; else delete base[a];
+  if (x) base[b] = x; else delete base[b];
+  save();
+}
+function keepSub(msg) {
+  const p = playById(ui.playId); const L = liveFor(p);
+  if (!baseOf(p, L.groupId)) return keepLineup();
+  toast(`${msg} for this snap`, { label: 'Keep for this play', fn: () => { keepLineup(); renderHint(); toast('Saved as this play\'s lineup'); } });
+}
 
 function subIn(spotKey, pid) {
   const p = playById(ui.playId); const L = liveFor(p);
-  for (const k of Object.keys(L.lineup)) if (L.lineup[k] === pid) delete L.lineup[k];
+  const from = Object.keys(L.lineup).find(k => L.lineup[k] === pid); const outPid = L.lineup[spotKey];
+  if (from) { ui.sel = null; ui.benchSel = null; return swapSpots(from, spotKey); }   // already on the field: that's a swap
   L.lineup[spotKey] = pid;
   const pl = player(pid); if (pl && pl.out) { pl.out = false; save(); }
-  keepLineup(); ui.sel = null; ui.benchSel = null; refreshLive();
+  keepSub(`${firstName(pl)} in${outPid && player(outPid) ? ` for ${firstName(player(outPid))}` : ''}`); ui.sel = null; ui.benchSel = null; refreshLive();
 }
 // dropped one player on another: they trade spots; the dragged circle snaps back to its spot
 function swapSpots(a, b) {
@@ -693,14 +713,14 @@ function swapSpots(a, b) {
   const pa = L.lineup[a], pb = L.lineup[b];
   if (pb) L.lineup[a] = pb; else delete L.lineup[a];
   if (pa) L.lineup[b] = pa; else delete L.lineup[b];
-  keepLineup(); ui.sel = null; ui.benchSel = null; refreshLive();
+  keepSwap(a, b); ui.sel = null; ui.benchSel = null; refreshLive();
 }
 function tapToken(key) {
   const L = liveFor(playById(ui.playId));
   if (ui.benchSel) return subIn(key, ui.benchSel);
   if (!ui.sel) ui.sel = key;
   else if (ui.sel === key) ui.sel = null;
-  else { const a = L.lineup[ui.sel], b = L.lineup[key]; if (b) L.lineup[ui.sel] = b; else delete L.lineup[ui.sel]; if (a) L.lineup[key] = a; else delete L.lineup[key]; ui.sel = null; keepLineup(); }
+  else { const a = L.lineup[ui.sel], b = L.lineup[key]; if (b) L.lineup[ui.sel] = b; else delete L.lineup[ui.sel]; if (a) L.lineup[key] = a; else delete L.lineup[key]; keepSwap(ui.sel, key); ui.sel = null; }
   refreshLive();
 }
 function tapBench(pid) {
@@ -851,7 +871,7 @@ function rotateLive() {
     keys.forEach(k => delete L.lineup[k]);
     keys.forEach((k, i) => { if (shifted[i]) L.lineup[k] = shifted[i]; });
   });
-  keepLineup(); ui.sel = null; ui.benchSel = null; refreshLive();
+  keepSub('Rotated'); ui.sel = null; ui.benchSel = null; refreshLive();
 }
 
 /* ================= LOG SHEET ================= */
@@ -1688,7 +1708,7 @@ function renderRoster() {
         balanced: 'Kids with the fewest snaps go in, and each kid gets the position they have played least this game. Tap Reset on a play for a new mix.',
         random: 'Kids with the fewest snaps go in, placed at random. Tap Reset on a play to reshuffle.',
         preferred: 'Each kid plays one of the positions you tick below when possible. Kids with no ticks can play anywhere.'
-      }[S.lineupMode || 'balanced']} Kids marked S are your safeties: on defense only they are put at safety (they can still fill other spots), and the S spot stays open if none are available. Kids marked QB are your throwers: every lineup gets one QB when one is available (they take turns), at whatever spot, and they wear a yellow ring. Once you sub, swap or rotate on a play, that play keeps your lineup (anyone marked out gets replaced) until you change it or tap Reset.</p>
+      }[S.lineupMode || 'balanced']} Kids marked S are your safeties: on defense only they are put at safety (they can still fill other spots), and the S spot stays open if none are available. Kids marked QB are your throwers: every lineup gets one QB when one is available (they take turns), at whatever spot, and they wear a yellow ring. Each play keeps its own lineup per group. Swapping players' spots changes it; a sub from the bench, Rotate or Take out only lasts for that snap, and the play's lineup comes back after LOG (tap Keep for this play to make it stick). Anyone marked out is filled in for. Reset clears it.</p>
     </div>
     <p class="help">Tap a circle to add a photo. Initials show until a photo is added. Mark a player "Out" to skip them in lineups for today; everyone comes back automatically at the next game.</p>
     <div class="two">
@@ -2098,14 +2118,16 @@ const ACT = {
   openLog: () => { const p = playById(ui.playId); const L = liveFor(p); openLog(p, L.lineup, L.groupId); },
   toggleOther: () => { ui.showOther = !ui.showOther; renderBench(); },
   clearSel: () => { ui.sel = null; ui.benchSel = null; refreshLive(); },
-  benchIt: () => { const L = liveFor(playById(ui.playId)); delete L.lineup[ui.sel]; ui.sel = null; keepLineup(); refreshLive(); },
+  keepNow: () => { keepLineup(); renderHint(); toast('Saved as this play\'s lineup'); },
+  backToBase: () => { ui.live.delete(ui.playId); ui.sel = null; ui.benchSel = null; refreshLive(); },
+  benchIt: () => { const L = liveFor(playById(ui.playId)); const pl = player(L.lineup[ui.sel]); delete L.lineup[ui.sel]; ui.sel = null; keepSub(`${pl ? firstName(pl) : 'Player'} out`); refreshLive(); },
   sitOut: () => {
     const p = playById(ui.playId); const L = liveFor(p); const pid = L.lineup[ui.sel]; const pl = player(pid); if (!pl) return;
     pl.out = true; save(); delete L.lineup[ui.sel];
     const snaps = snapCounts(p.side); const onField = new Set(Object.values(L.lineup));
     const next = S.players.filter(x => x.groupId === L.groupId && !x.out && !onField.has(x.id)).sort((a, b) => (snaps[a.id] || 0) - (snaps[b.id] || 0))[0];
     if (next) L.lineup[ui.sel] = next.id;
-    ui.sel = null; keepLineup(); refreshLive(); toast(`${pl.name} is out for today`);
+    ui.sel = null; refreshLive(); toast(`${pl.name} is out for today`);
   },
   mark: b => {
     const d = ui.logDraft; const a = S.actions[d.side].find(x => x.id === b.dataset.a); const pid = b.dataset.p;
