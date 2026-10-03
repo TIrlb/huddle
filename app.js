@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.11.2';
+const APP_VERSION = '1.12.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -530,8 +530,7 @@ function renderPlay() {
       <button type="button" class="btn" data-act="rotate" title="Everyone moves one spot; next bench player comes in">Rotate</button>
       <button type="button" class="btn ${ui.flips.has(p.id) ? 'toggled' : ''}" data-act="flip" title="Mirror the play left/right">Flip</button>
       <button type="button" class="btn ${ui.draw.on ? 'toggled' : ''}" data-act="drawMode" title="Draw on the play">Draw</button>
-      <button type="button" class="btn" data-act="resetLive" title="Default lineup and spots; un-flip">Reset</button>
-      <button type="button" class="btn" data-act="saveDefault" title="Make this the default lineup for this play">Save lineup</button>
+      <button type="button" class="btn" data-act="resetLive" title="Forget this play's lineup and fill it fresh; un-flip">Reset</button>
       <button type="button" class="btn" data-act="editPlay">Edit</button>
       <button type="button" class="btn" data-act="fullScreen" aria-label="Full screen" title="Full screen (or tap the field)">⤢</button>
     </div>
@@ -666,13 +665,18 @@ function renderHint() {
   }
 }
 function refreshLive() { renderTokens(); renderBench(); renderHint(); }
+// any lineup change you make on a play (sub, swap, take out, rotate) becomes that play's lineup until you change it again or Reset
+function keepLineup() {
+  const p = playById(ui.playId); if (!p) return; const L = liveFor(p);
+  p.assign ||= {}; p.assign[L.groupId] = { ...L.lineup }; save();
+}
 
 function subIn(spotKey, pid) {
   const p = playById(ui.playId); const L = liveFor(p);
   for (const k of Object.keys(L.lineup)) if (L.lineup[k] === pid) delete L.lineup[k];
   L.lineup[spotKey] = pid;
   const pl = player(pid); if (pl && pl.out) { pl.out = false; save(); }
-  ui.sel = null; ui.benchSel = null; refreshLive();
+  keepLineup(); ui.sel = null; ui.benchSel = null; refreshLive();
 }
 // dropped one player on another: they trade spots; the dragged circle snaps back to its spot
 function swapSpots(a, b) {
@@ -681,14 +685,14 @@ function swapSpots(a, b) {
   const pa = L.lineup[a], pb = L.lineup[b];
   if (pb) L.lineup[a] = pb; else delete L.lineup[a];
   if (pa) L.lineup[b] = pa; else delete L.lineup[b];
-  ui.sel = null; ui.benchSel = null; refreshLive();
+  keepLineup(); ui.sel = null; ui.benchSel = null; refreshLive();
 }
 function tapToken(key) {
   const L = liveFor(playById(ui.playId));
   if (ui.benchSel) return subIn(key, ui.benchSel);
   if (!ui.sel) ui.sel = key;
   else if (ui.sel === key) ui.sel = null;
-  else { const a = L.lineup[ui.sel], b = L.lineup[key]; if (b) L.lineup[ui.sel] = b; else delete L.lineup[ui.sel]; if (a) L.lineup[key] = a; else delete L.lineup[key]; ui.sel = null; }
+  else { const a = L.lineup[ui.sel], b = L.lineup[key]; if (b) L.lineup[ui.sel] = b; else delete L.lineup[ui.sel]; if (a) L.lineup[key] = a; else delete L.lineup[key]; ui.sel = null; keepLineup(); }
   refreshLive();
 }
 function tapBench(pid) {
@@ -839,7 +843,7 @@ function rotateLive() {
     keys.forEach(k => delete L.lineup[k]);
     keys.forEach((k, i) => { if (shifted[i]) L.lineup[k] = shifted[i]; });
   });
-  ui.sel = null; ui.benchSel = null; refreshLive();
+  keepLineup(); ui.sel = null; ui.benchSel = null; refreshLive();
 }
 
 /* ================= LOG SHEET ================= */
@@ -1665,7 +1669,7 @@ function renderRoster() {
         balanced: 'Kids with the fewest snaps go in, and each kid gets the position they have played least this game. Tap Reset on a play for a new mix.',
         random: 'Kids with the fewest snaps go in, placed at random. Tap Reset on a play to reshuffle.',
         preferred: 'Each kid plays one of the positions you tick below when possible. Kids with no ticks can play anywhere.'
-      }[S.lineupMode || 'balanced']} Kids marked S are your safeties: on defense only they are put at safety (they can still fill other spots), and the S spot stays open if none are available. Kids marked QB are your throwers: every lineup gets one QB when one is available (they take turns), at whatever spot, and they wear a yellow ring. A lineup saved on a play with Save lineup always wins.</p>
+      }[S.lineupMode || 'balanced']} Kids marked S are your safeties: on defense only they are put at safety (they can still fill other spots), and the S spot stays open if none are available. Kids marked QB are your throwers: every lineup gets one QB when one is available (they take turns), at whatever spot, and they wear a yellow ring. Once you sub, swap or rotate on a play, that play keeps your lineup (anyone marked out gets replaced) until you change it or tap Reset.</p>
     </div>
     <p class="help">Tap a circle to add a photo. Initials show until a photo is added. Mark a player "Out" to skip them in lineups for today; everyone comes back automatically at the next game.</p>
     <div class="two">
@@ -2060,7 +2064,10 @@ const ACT = {
   inkErase: () => { const was = ui.draw.on && ui.draw.erase; ui.draw.erase = !was; if (ui.draw.erase) penOn(); else penSync(); },
   inkUndo: () => { const p = playById(ui.playId); p.ink?.pop(); save(); renderInk(); renderHint(); },
   inkClear: b => { if (!armed(b, 'Tap again to clear')) return; const p = playById(ui.playId); p.ink = []; save(); renderInk(); renderHint(); },
-  resetLive: () => { ui.live.delete(ui.playId); ui.flips.delete(ui.playId); ui.sel = null; ui.benchSel = null; renderPlay(); },
+  resetLive: () => {
+    const p = playById(ui.playId); const gid = groupForSide(p.side).id;
+    if (p.assign?.[gid]) { delete p.assign[gid]; save(); }
+    ui.live.delete(ui.playId); ui.flips.delete(ui.playId); ui.sel = null; ui.benchSel = null; renderPlay(); },
   saveDefault: () => {
     const p = playById(ui.playId); const L = liveFor(p);
     p.assign ||= {}; p.assign[L.groupId] = { ...L.lineup }; save();
@@ -2070,14 +2077,14 @@ const ACT = {
   openLog: () => { const p = playById(ui.playId); const L = liveFor(p); openLog(p, L.lineup, L.groupId); },
   toggleOther: () => { ui.showOther = !ui.showOther; renderBench(); },
   clearSel: () => { ui.sel = null; ui.benchSel = null; refreshLive(); },
-  benchIt: () => { const L = liveFor(playById(ui.playId)); delete L.lineup[ui.sel]; ui.sel = null; refreshLive(); },
+  benchIt: () => { const L = liveFor(playById(ui.playId)); delete L.lineup[ui.sel]; ui.sel = null; keepLineup(); refreshLive(); },
   sitOut: () => {
     const p = playById(ui.playId); const L = liveFor(p); const pid = L.lineup[ui.sel]; const pl = player(pid); if (!pl) return;
     pl.out = true; save(); delete L.lineup[ui.sel];
     const snaps = snapCounts(p.side); const onField = new Set(Object.values(L.lineup));
     const next = S.players.filter(x => x.groupId === L.groupId && !x.out && !onField.has(x.id)).sort((a, b) => (snaps[a.id] || 0) - (snaps[b.id] || 0))[0];
     if (next) L.lineup[ui.sel] = next.id;
-    ui.sel = null; refreshLive(); toast(`${pl.name} is out for today`);
+    ui.sel = null; keepLineup(); refreshLive(); toast(`${pl.name} is out for today`);
   },
   mark: b => {
     const d = ui.logDraft; const a = S.actions[d.side].find(x => x.id === b.dataset.a); const pid = b.dataset.p;
