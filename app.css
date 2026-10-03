@@ -430,3 +430,18 @@ td.hi { font-weight: 800; }
   content: ''; position: absolute; top: 4px; bottom: 4px; width: 5px; border-radius: 3px; background: var(--select); z-index: 3;
 }
 .card.drop-before::before { left: 0; } .card.drop-after::after { right: 0; }
+
+/* full-screen play */
+body.fullplay .topbar, body.fullplay #banner, body.fullplay .play-top, body.fullplay #hint, body.fullplay .bench { display: none !important; }
+body.fullplay #view-play .stage-wrap { padding: calc(4px + env(safe-area-inset-top, 0px)) 52px 4px; }
+body.fullplay .navarrow { width: 44px; height: 72px; font-size: 38px; }
+body.fullplay .navpos { display: none; }
+.fullbar {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px)); background: var(--surface); border-top: 1px solid var(--line);
+}
+.fullbar[hidden] { display: none; }
+.fb-exit { min-width: 48px; font-size: 20px; }
+.fb-title { font: 700 18px/1 var(--display); max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.fullbar .btn.log { min-height: 52px; min-width: 120px; font-size: 26px; }
+@media (max-width: 700px) { .fb-title { display: none; } }

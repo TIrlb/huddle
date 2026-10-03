@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.9.1';
+const APP_VERSION = '1.10.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -312,6 +312,7 @@ function showView(v) {
   const tabView = ['play', 'edit'].includes(v) ? 'library' : v;
   $$('.tab').forEach(t => t.classList.toggle('on', t.dataset.view === tabView));
   if (v === 'play') wake(true); else wake(false);
+  if (v !== 'play' && ui.full) { ui.full = false; document.body.classList.remove('fullplay'); }
 }
 function render() {
   $('#teamName').textContent = S.team || 'Team'; applyTheme(); renderScore();
@@ -523,11 +524,13 @@ function renderPlay() {
       <button type="button" class="btn" data-act="resetLive" title="Default lineup and spots; un-flip">Reset</button>
       <button type="button" class="btn" data-act="saveDefault" title="Make this the default lineup for this play">Save lineup</button>
       <button type="button" class="btn" data-act="editPlay">Edit</button>
+      <button type="button" class="btn" data-act="fullScreen" aria-label="Full screen" title="Full screen (or tap the field)">⤢</button>
     </div>
     <button type="button" class="btn log" data-act="openLog">LOG</button>
   </div>
   <div class="hint" id="hint"></div>
   <div class="stage-wrap" id="stageWrap">${navArrows(p)}<div class="stage${ui.flips.has(p.id) ? ' flipped' : ''}${ui.draw.on ? ' drawing' : ''}${ui.draw.erase ? ' erasing' : ''}" id="stage"><img id="stageImg" alt=""><svg id="ink" class="ink" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg><div id="tokens"></div></div></div>
+  <div class="fullbar" id="fullbar" hidden></div>
   <div class="bench" id="bench"></div>`;
   setupStage(p, 'live');
   renderBench();
@@ -593,16 +596,43 @@ function renderBench() {
     + `<button type="button" class="btn small ghost" data-act="toggleOther">${ui.showOther ? 'Hide ' : '+ '}${esc(og?.name || 'others')}</button>`;
   bindBench();
 }
+/* full-screen play: everything but the drawing hides; a slim bar keeps the pen tools and LOG */
+function penOn() { ui.draw.on = true; ui.sel = null; ui.benchSel = null; penSync(); }
+function penSync() {
+  const st = $('#stage'); if (st) { st.classList.toggle('drawing', ui.draw.on); st.classList.toggle('erasing', ui.draw.on && ui.draw.erase); }
+  if (!ui.full) { const tb = $('[data-act=drawMode]'); tb?.classList.toggle('toggled', ui.draw.on); }
+  renderHint(); renderTokens();
+}
+function setFull(on) {
+  ui.full = !!on; document.body.classList.toggle('fullplay', ui.full);
+  if (ui.view !== 'play') return;
+  renderFullbar(); fitStage(); renderTokens(); renderInk();
+}
+function inkTools(p) {
+  return `${INK_COLORS.map(c => `<button type="button" class="inkc ${ui.draw.on && !ui.draw.erase && ui.draw.color === c ? 'on' : ''}" style="background:${c}" data-act="inkColor" data-c="${c}" aria-label="Pen color"></button>`).join('')}
+    <button type="button" class="btn small ${ui.draw.arrow ? 'toggled' : ''}" data-act="inkArrow">Arrow</button>
+    <button type="button" class="btn small ${ui.draw.on && ui.draw.erase ? 'toggled' : ''}" data-act="inkErase">Eraser</button>
+    <button type="button" class="btn small" data-act="inkUndo" ${(p.ink || []).length ? '' : 'disabled'}>Undo</button>
+    <button type="button" class="btn small danger" data-act="inkClear" ${(p.ink || []).length ? '' : 'disabled'}>Clear all</button>`;
+}
+function renderFullbar() {
+  const bar = $('#fullbar'); if (!bar) return;
+  bar.hidden = !ui.full; if (!ui.full) return;
+  const p = playById(ui.playId);
+  bar.innerHTML = `<button type="button" class="btn fb-exit" data-act="fullOff" aria-label="Exit full screen">✕</button>
+    <span class="fb-title">${esc(p.name)}</span>
+    <button type="button" class="btn small ${ui.draw.on ? '' : 'toggled'}" data-act="penOff" title="Move and swap players">✋ Players</button>
+    ${inkTools(p)}
+    <div class="spacer"></div>
+    <button type="button" class="btn log" data-act="fullLog">LOG</button>`;
+}
 function renderHint() {
   const h = $('#hint'); if (!h) return;
   const p = playById(ui.playId); const L = liveFor(p);
+  renderFullbar();
   if (ui.draw.on) {
     h.className = 'hint active';
-    h.innerHTML = `<div class="inkbar">${INK_COLORS.map(c => `<button type="button" class="inkc ${!ui.draw.erase && ui.draw.color === c ? 'on' : ''}" style="background:${c}" data-act="inkColor" data-c="${c}" aria-label="Pen color"></button>`).join('')}
-      <button type="button" class="btn small ${ui.draw.arrow ? 'toggled' : ''}" data-act="inkArrow">Arrow</button>
-      <button type="button" class="btn small ${ui.draw.erase ? 'toggled' : ''}" data-act="inkErase">Eraser</button>
-      <button type="button" class="btn small" data-act="inkUndo" ${(p.ink || []).length ? '' : 'disabled'}>Undo</button>
-      <button type="button" class="btn small danger" data-act="inkClear" ${(p.ink || []).length ? '' : 'disabled'}>Clear all</button>
+    h.innerHTML = `<div class="inkbar">${inkTools(p)}
       <span class="muted">${ui.draw.erase ? 'Tap a line to erase it.' : 'Drawings stay on this play until you clear them.'}</span>
       <button type="button" class="btn small primary" data-act="drawMode">Done</button></div>`;
     return;
@@ -618,7 +648,7 @@ function renderHint() {
     h.innerHTML = `<span><b>${esc(player(ui.benchSel)?.name)}</b> is going in. Tap the player coming out.</span><button type="button" class="btn small ghost" data-act="clearSel">Cancel</button>`;
   } else {
     h.className = 'hint';
-    h.textContent = 'Tap a player to sub or swap. Drag a player onto another to swap them, or anywhere else to show where they go.';
+    h.textContent = 'Tap a player to sub or swap. Drag a player onto another to swap them, or anywhere else to show where they go. Tap the field for full screen.';
   }
 }
 function refreshLive() { renderTokens(); renderBench(); renderHint(); }
@@ -659,7 +689,15 @@ function bindStage(mode) {
     if (mode === 'edit' && ui.edit?.crop) return startCrop(e);
     if (mode === 'live' && ui.draw.on) return ui.draw.erase ? eraseAt(e) : startStroke(e);
     const tk = e.target.closest('.token');
-    if (!tk) { if (mode === 'live' && (ui.sel || ui.benchSel)) { ui.sel = null; ui.benchSel = null; refreshLive(); } return; }
+    if (!tk) {
+      if (mode === 'live' && (ui.sel || ui.benchSel)) { ui.sel = null; ui.benchSel = null; refreshLive(); return; }
+      if (mode === 'live') { // a quick tap on the field toggles full screen
+        const sx = e.clientX, sy = e.clientY, t0 = Date.now();
+        const up = ev => { stage.removeEventListener('pointerup', up); if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 10 && Date.now() - t0 < 600) setFull(!ui.full); };
+        stage.addEventListener('pointerup', up);
+      }
+      return;
+    }
     e.preventDefault();
     const key = tk.dataset.spot; const rect = stage.getBoundingClientRect();
     const sx = e.clientX, sy = e.clientY; let dragging = false; let hot = null;
@@ -1902,9 +1940,13 @@ const ACT = {
   nextPlay: () => stepPlay(1),
   flip: () => { const id = ui.playId; ui.flips.has(id) ? ui.flips.delete(id) : ui.flips.add(id); renderPlay(); },
   drawMode: () => { ui.draw.on = !ui.draw.on; ui.draw.erase = false; ui.sel = null; ui.benchSel = null; renderPlay(); },
-  inkColor: b => { ui.draw.color = b.dataset.c; ui.draw.erase = false; $('#stage')?.classList.remove('erasing'); renderHint(); },
+  inkColor: b => { ui.draw.color = b.dataset.c; ui.draw.erase = false; penOn(); },
+  penOff: () => { if (ui.draw.on) { ui.draw.on = false; ui.draw.erase = false; penSync(); } },
+  fullOff: () => setFull(false),
+  fullScreen: () => setFull(true),
+  fullLog: () => { ui.draw.on = false; setFull(false); renderPlay(); ACT.openLog(); },
   inkArrow: () => { ui.draw.arrow = !ui.draw.arrow; renderHint(); },
-  inkErase: () => { ui.draw.erase = !ui.draw.erase; $('#stage')?.classList.toggle('erasing', ui.draw.erase); renderHint(); },
+  inkErase: () => { const was = ui.draw.on && ui.draw.erase; ui.draw.erase = !was; if (ui.draw.erase) penOn(); else penSync(); },
   inkUndo: () => { const p = playById(ui.playId); p.ink?.pop(); save(); renderInk(); renderHint(); },
   inkClear: b => { if (!armed(b, 'Tap again to clear')) return; const p = playById(ui.playId); p.ink = []; save(); renderInk(); renderHint(); },
   resetLive: () => { ui.live.delete(ui.playId); ui.flips.delete(ui.playId); ui.sel = null; ui.benchSel = null; renderPlay(); },
