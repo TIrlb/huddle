@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.10.4';
+const APP_VERSION = '1.11.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -193,7 +193,7 @@ function disc(p, extra = '') {
   if (!p) return `<span class="disc ${extra}"></span>`;
   const g = group(p.groupId);
   const inner = p.photoId && urlOf(p.photoId) ? `<img src="${urlOf(p.photoId)}" alt="">` : esc(initials(p));
-  return `<span class="disc ${p.qb ? 'qb ' : ''}${extra}" style="${gstyle(g)}">${inner}</span>`;
+  return `<span class="disc ${p.qb ? 'qb ' : ''}${p.safety ? 'saf ' : ''}${extra}" style="${gstyle(g)}">${inner}</span>`;
 }
 function scoreOf(g) { g ||= currentGame(); return g?.score || { us: 0, them: 0, ev: [] }; }
 function renderScore() {
@@ -239,23 +239,30 @@ function callCounts(gameId = S.gameId) {
 }
 
 /* ---------------- lineup logic ---------------- */
+const isSafetySpot = sp => /^(S|FS|SS)\d*$/i.test(sp.label || '');
 function fillLineup(play, gid) {
   const present = S.players.filter(p => p.groupId === gid && !p.out);
   const def = (play.assign && play.assign[gid]) || {};
   const lineup = {}; const used = new Set();
+  const safetyRule = play.side === 'D' && play.spots.some(isSafetySpot);
   for (const sp of play.spots) {
     const pid = def[sp.key];
+    if (safetyRule && isSafetySpot(sp) && !player(pid)?.safety) continue;   // only kids marked S play safety
     if (pid && present.some(p => p.id === pid) && !used.has(pid)) { lineup[sp.key] = pid; used.add(pid); }
   }
-  const open = play.spots.filter(sp => !lineup[sp.key]);
+  const snaps = snapCounts(play.side); const rnd = new Map(present.map(p => [p.id, Math.random()]));
+  const fewest = (a, b) => (snaps[a.id] || 0) - (snaps[b.id] || 0) || rnd.get(a.id) - rnd.get(b.id);
+  // safeties first, from the kids marked S (fewest snaps first); a safety spot stays empty if none are left
+  if (safetyRule) {
+    const safeties = present.filter(p => p.safety && !used.has(p.id)).sort(fewest);
+    for (const sp of play.spots) if (isSafetySpot(sp) && !lineup[sp.key] && safeties.length) { const k = safeties.shift(); lineup[sp.key] = k.id; used.add(k.id); }
+  }
+  const open = play.spots.filter(sp => !lineup[sp.key] && !(safetyRule && isSafetySpot(sp)));
   if (!open.length) return lineup;
   // who plays: fewest snaps this game, ties broken randomly
-  const snaps = snapCounts(play.side); const rnd = new Map(present.map(p => [p.id, Math.random()]));
-  const pool = present.filter(p => !used.has(p.id))
-    .sort((a, b) => (snaps[a.id] || 0) - (snaps[b.id] || 0) || rnd.get(a.id) - rnd.get(b.id))
-    .slice(0, open.length);
-  // always have a thrower out there: swap in the QB with the fewest snaps for the last pick
-  if (![...used].some(id => player(id)?.qb) && !pool.some(p => p.qb)) {
+  const pool = present.filter(p => !used.has(p.id)).sort(fewest).slice(0, open.length);
+  // offense always has a thrower out there: swap in the QB with the fewest snaps for the last pick
+  if (play.side === 'O' && ![...used].some(id => player(id)?.qb) && !pool.some(p => p.qb)) {
     const qb = present.filter(p => p.qb && !used.has(p.id)).sort((a, b) => (snaps[a.id] || 0) - (snaps[b.id] || 0) || rnd.get(a.id) - rnd.get(b.id))[0];
     if (qb && pool.length) pool[pool.length - 1] = qb; else if (qb) pool.push(qb);
   }
@@ -312,6 +319,7 @@ function showView(v) {
   const tabView = ['play', 'edit'].includes(v) ? 'library' : v;
   $$('.tab').forEach(t => t.classList.toggle('on', t.dataset.view === tabView));
   if (v === 'play') wake(true); else wake(false);
+  if (v !== 'play') delete document.body.dataset.side;
   if (v !== 'play' && ui.full) { ui.full = false; document.body.classList.remove('fullplay'); }
 }
 function render() {
@@ -511,6 +519,7 @@ function stepPlay(dir) {
 function renderPlay() {
   const p = playById(ui.playId); if (!p) return go('library');
   const L = liveFor(p); const g = group(L.groupId);
+  document.body.dataset.side = p.side;
   const el = $('#view-play');
   el.innerHTML = `
   <div class="play-top">
@@ -573,7 +582,7 @@ function renderTokens() {
     const tk = tokenSize(p, sp);
     const sel = ui.sel === sp.key ? ' sel' : '';
     if (!pl) return `<div class="token empty${sel}" data-spot="${sp.key}" style="left:${pos.x}%;top:${pos.y}%;${tk}"><span class="disc">${esc(sp.label)}</span></div>`;
-    return `<div class="token${sel}" data-spot="${sp.key}" style="left:${pos.x}%;top:${pos.y}%;${tk}">${disc(pl)}<span class="tpos">${esc(sp.label)}</span>${pl.qb ? '<span class="tqb" title="Thrower">QB</span>' : ''}</div>`;
+    return `<div class="token${sel}" data-spot="${sp.key}" style="left:${pos.x}%;top:${pos.y}%;${tk}">${disc(pl)}<span class="tpos">${esc(sp.label)}</span>${p.side === 'O' && pl.qb ? '<span class="tqb" title="Thrower">QB</span>' : ''}${p.side === 'D' && pl.safety ? '<span class="tqb tsaf" title="Safety">S</span>' : ''}</div>`;
   }).join('');
 }
 // player circles match the markers found in the drawing (sp.d = diameter as % of drawing width)
@@ -808,17 +817,23 @@ function bindBench() {
 
 function rotateLive() {
   const p = playById(ui.playId); const L = liveFor(p);
-  const keys = p.spots.map(s => s.key);
-  const onField = keys.map(k => L.lineup[k]).filter(Boolean);
   const snaps = snapCounts(p.side);
-  const bench = S.players.filter(x => x.groupId === L.groupId && !x.out && !onField.includes(x.id))
-    .sort((a, b) => (snaps[a.id] || 0) - (snaps[b.id] || 0));
-  const seq = keys.map(k => L.lineup[k] || null);
-  if (bench.length) seq.push(bench[0].id);
-  if (seq.filter(Boolean).length < 2) return;
-  const shifted = seq.slice(1).concat(seq.slice(0, 1));
-  L.lineup = {};
-  keys.forEach((k, i) => { if (shifted[i]) L.lineup[k] = shifted[i]; });
+  const all = p.spots.map(s => s.key);
+  const safetyRule = p.side === 'D' && p.spots.some(isSafetySpot);
+  // on defense the safety spots rotate among the S kids only; everyone else rotates through the other spots
+  const groups = safetyRule ? [p.spots.filter(isSafetySpot).map(s => s.key), p.spots.filter(s => !isSafetySpot(s)).map(s => s.key)] : [all];
+  const onField = () => all.map(k => L.lineup[k]).filter(Boolean);
+  groups.forEach((keys, gi) => {
+    const isS = safetyRule && gi === 0;
+    const bench = S.players.filter(x => x.groupId === L.groupId && !x.out && !onField().includes(x.id) && (!isS || x.safety))
+      .sort((a, b) => (snaps[a.id] || 0) - (snaps[b.id] || 0));
+    const seq = keys.map(k => L.lineup[k] || null);
+    if (bench.length) seq.push(bench[0].id);
+    if (seq.filter(Boolean).length < 2) return;
+    const shifted = seq.slice(1).concat(seq.slice(0, 1));
+    keys.forEach(k => delete L.lineup[k]);
+    keys.forEach((k, i) => { if (shifted[i]) L.lineup[k] = shifted[i]; });
+  });
   ui.sel = null; ui.benchSel = null; refreshLive();
 }
 
@@ -829,6 +844,7 @@ function openLog(play, lineup, groupId) {
 }
 function renderLog() {
   const d = ui.logDraft; const g = group(d.groupId);
+  document.body.dataset.side = d.side;
   const kids = d.play.spots.map(sp => ({ sp, p: player(d.lineup[sp.key]) })).filter(k => k.p);
   const acts = S.actions[d.side];
   $('#sheetCard').innerHTML = `
@@ -1587,7 +1603,7 @@ function renderRoster() {
         balanced: 'Kids with the fewest snaps go in, and each kid gets the position they have played least this game. Tap Reset on a play for a new mix.',
         random: 'Kids with the fewest snaps go in, placed at random. Tap Reset on a play to reshuffle.',
         preferred: 'Each kid plays one of the positions you tick below when possible. Kids with no ticks can play anywhere.'
-      }[S.lineupMode || 'balanced']} Kids marked QB are your throwers: every lineup gets one QB when one is available (they take turns), at whatever spot, and they wear a yellow ring. A lineup saved on a play with Save lineup always wins.</p>
+      }[S.lineupMode || 'balanced']} Kids marked S are your safeties: on defense only they are put at safety (they can still fill other spots), and the S spot stays open if none are available. Kids marked QB are your throwers: every lineup gets one QB when one is available (they take turns), at whatever spot, and they wear a yellow ring. A lineup saved on a play with Save lineup always wins.</p>
     </div>
     <p class="help">Tap a circle to add a photo. Initials show until a photo is added. Mark a player "Out" to skip them in lineups for today; everyone comes back automatically at the next game.</p>
     <div class="two">
@@ -1603,6 +1619,7 @@ function renderRoster() {
             <input type="text" data-pinit="${p.id}" value="${esc(p.initials)}" placeholder="${esc(initials({ ...p, initials: '' }))}" maxlength="3" aria-label="Initials">
             <div class="prow-actions">
               <button type="button" class="btn small qbtoggle ${p.qb ? 'on' : ''}" data-act="toggleQB" data-pid="${p.id}" aria-pressed="${!!p.qb}">QB</button>
+              <button type="button" class="btn small saftoggle ${p.safety ? 'on' : ''}" data-act="toggleSafety" data-pid="${p.id}" aria-pressed="${!!p.safety}" title="Can play safety">S</button>
               <button type="button" class="btn small" data-act="toggleOut" data-pid="${p.id}">${p.out ? 'Out' : 'In'}</button>
               <button type="button" class="btn small" data-act="moveGroup" data-pid="${p.id}" title="Move to ${esc(og.name)}">→ ${esc(og.name)}</button>
               <button type="button" class="btn small danger" data-act="delPlayer" data-pid="${p.id}" aria-label="Remove">✕</button>
@@ -2070,6 +2087,7 @@ const ACT = {
     addPoints(g, side, n); save(); renderScore(); openScore();
   },
   undoScore: () => { const g = currentGame(); const e = g?.score?.ev.pop(); if (e) { g.score[e[0]] -= e[1]; if (e[2]) { const l = S.logs.find(x => x.id === e[2]); if (l) delete l.pts; } save(); renderScore(); openScore(); } },
+  toggleSafety: b => { const p = player(b.dataset.pid); p.safety = !p.safety; ui.live.clear(); save(); renderRoster(); },
   toggleQB: b => { const p = player(b.dataset.pid); p.qb = !p.qb; ui.live.clear(); save(); renderRoster(); },
   togglePos: b => {
     const p = player(b.dataset.pid); const side = b.dataset.side; const l = b.dataset.l;
