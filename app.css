@@ -1,8 +1,8 @@
 /* Layout: one-screen sideline app. Team-red top bar, turf-tinted neutral ground,
    white "whiteboard" stage for plays, gold reserved for the LOG action. */
-@font-face { font-family: 'Barlow Condensed'; font-weight: 600; font-display: swap; src: url(fonts/bc-600.woff2) format('woff2'); }
-@font-face { font-family: 'Barlow Condensed'; font-weight: 700; font-display: swap; src: url(fonts/bc-700.woff2) format('woff2'); }
-@font-face { font-family: 'Barlow Condensed'; font-weight: 800; font-display: swap; src: url(fonts/bc-800.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-weight: 600; font-display: swap; src: url(bc-600.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-weight: 700; font-display: swap; src: url(bc-700.woff2) format('woff2'); }
+@font-face { font-family: 'Barlow Condensed'; font-weight: 800; font-display: swap; src: url(bc-800.woff2) format('woff2'); }
 
 :root {
   --bg: #eef2f0;

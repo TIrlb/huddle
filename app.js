@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.10.0';
+const APP_VERSION = '1.10.1';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -1123,7 +1123,7 @@ const mimeOf = n => /\.png$/i.test(n) ? 'image/png' : /\.gif$/i.test(n) ? 'image
 
 async function readPdf(file) {
   if (!window.pdfjsLib) throw new Error('The PDF reader did not load. Reload the app and try again.');
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js';
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
   const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
   const items = []; const base = file.name.replace(/\.pdf$/i, '');
   for (let i = 1; i <= pdf.numPages; i++) {

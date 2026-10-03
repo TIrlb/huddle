@@ -1,10 +1,10 @@
 // Offline cache for Huddle. Bump CACHE when you deploy a new version.
-const CACHE = 'huddle-v1.10.0';
+const CACHE = 'huddle-v1.10.1';
 const ASSETS = [
   './', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest',
-  'vendor/jszip.min.js', 'vendor/pdf.min.js', 'vendor/pdf.worker.min.js',
-  'fonts/bc-600.woff2', 'fonts/bc-700.woff2', 'fonts/bc-800.woff2',
-  'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'
+  'jszip.min.js', 'pdf.min.js', 'pdf.worker.min.js',
+  'bc-600.woff2', 'bc-700.woff2', 'bc-800.woff2',
+  'icon-180.png', 'icon-192.png', 'icon-512.png'
 ];
 
 self.addEventListener('install', e => {
