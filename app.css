@@ -451,3 +451,13 @@ body[data-side="D"] .disc.qb:not(.saf) { border-color: #fff !important; box-shad
 body[data-side="D"] .disc.saf { border-color: #22d3ee !important; box-shadow: 0 0 0 2px #0b3b47, 0 2px 6px rgba(0,0,0,.35); }
 .tsaf { background: #22d3ee; }
 .saftoggle.on { background: #22d3ee; color: #0b2a33; border-color: #0b3b47; }
+
+/* route-color ring: matches the marker the circle covers */
+.token .ring {
+  position: absolute; left: 50%; top: calc(var(--tk) / 2); transform: translate(-50%, -50%);
+  width: calc(var(--tk) + 2 * max(5px, var(--tk) * .13)); height: calc(var(--tk) + 2 * max(5px, var(--tk) * .13));
+  border-radius: 50%; border: max(5px, calc(var(--tk) * .13)) solid var(--rc); box-shadow: 0 0 0 1.5px rgba(0,0,0,.55);
+  pointer-events: none; z-index: -1;
+}
+.token.dragging .ring { transform: translate(-50%, -50%) scale(1.12); }
+.token.rc .tpos { background: var(--rc); color: var(--rc-ink); }

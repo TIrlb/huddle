@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.12.0';
+const APP_VERSION = '1.13.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -584,8 +584,9 @@ function renderTokens() {
     const raw = L.pos[sp.key] || sp; const pos = { x: fl ? 100 - raw.x : raw.x, y: raw.y }; const pl = player(L.lineup[sp.key]);
     const tk = tokenSize(p, sp);
     const sel = ui.sel === sp.key ? ' sel' : '';
-    if (!pl) return `<div class="token empty${sel}" data-spot="${sp.key}" style="left:${pos.x}%;top:${pos.y}%;${tk}"><span class="disc">${esc(sp.label)}</span></div>`;
-    return `<div class="token${sel}" data-spot="${sp.key}" style="left:${pos.x}%;top:${pos.y}%;${tk}">${disc(pl)}<span class="tpos">${esc(sp.label)}</span>${p.side === 'O' && pl.qb ? '<span class="tqb" title="Thrower">QB</span>' : ''}${p.side === 'D' && pl.safety ? '<span class="tqb tsaf" title="Safety">S</span>' : ''}</div>`;
+    const rc = sp.color ? ' rc' : ''; const ring = sp.color ? '<span class="ring"></span>' : '';
+    if (!pl) return `<div class="token empty${sel}${rc}" data-spot="${sp.key}" style="left:${pos.x}%;top:${pos.y}%;${tk}${ringStyle(sp)}">${ring}<span class="disc">${esc(sp.label)}</span></div>`;
+    return `<div class="token${sel}${rc}" data-spot="${sp.key}" style="left:${pos.x}%;top:${pos.y}%;${tk}${ringStyle(sp)}">${ring}${disc(pl)}<span class="tpos">${esc(sp.label)}</span>${p.side === 'O' && pl.qb ? '<span class="tqb" title="Thrower">QB</span>' : ''}${p.side === 'D' && pl.safety ? '<span class="tqb tsaf" title="Safety">S</span>' : ''}</div>`;
   }).join('');
 }
 // player circles cover the markers in the drawing; one size per play (the typical marker, as % of drawing width)
@@ -594,7 +595,7 @@ function tokenSize(p) {
   const ds = p.spots.filter(x => x.label !== 'C').map(x => x.d).filter(Boolean).sort((a, b) => a - b);
   const d = ds.length ? ds[Math.floor((ds.length - 1) / 2)] : p.spots.map(x => x.d).find(Boolean);
   if (!d) return '';
-  return `--tk:${Math.max(26, Math.round(w * d / 100 * (S.tokenScale || 1)))}px`;
+  return `--tk:${Math.max(26, Math.round(w * d / 100 * (S.tokenScale || 1)))}px;`;
 }
 function renderBench() {
   const p = playById(ui.playId); const L = liveFor(p); const bench = $('#bench'); if (!bench) return;
@@ -940,7 +941,7 @@ function renderEdit() {
 function renderSpotTokens() {
   const p = playById(ui.edit.playId); const box = $('#tokens'); if (!box) return;
   box.hidden = !!ui.edit.crop;
-  box.innerHTML = p.spots.map(sp => `<div class="token spot${ui.edit.selSpot === sp.key ? ' sel' : ''}" data-spot="${sp.key}" style="left:${sp.x}%;top:${sp.y}%;${tokenSize(p, sp)}"><span class="disc">${esc(sp.label)}</span></div>`).join('');
+  box.innerHTML = p.spots.map(sp => `<div class="token spot${ui.edit.selSpot === sp.key ? ' sel' : ''}${sp.color ? ' rc' : ''}" data-spot="${sp.key}" style="left:${sp.x}%;top:${sp.y}%;${tokenSize(p, sp)}${ringStyle(sp)}">${sp.color ? '<span class="ring"></span>' : ''}<span class="disc">${esc(sp.label)}</span></div>`).join('');
 }
 function renderEditPanel() {
   const p = playById(ui.edit.playId); const panel = $('#editPanel'); if (!panel) return;
@@ -1358,7 +1359,9 @@ async function detectMarkers(blob, side) {
       if (a < 0) continue;
       for (let x = Math.max(ix0, a + pad); x <= Math.min(ix1, b - pad); x++) { const i = (y * W + x) * 4; const dr = d[i] - br, dg = d[i + 1] - bgG, db = d[i + 2] - bb; if (dr * dr + dg * dg + db * db > 85 * 85) { mask[(y - iy0) * mw + (x - ix0)] = 1; cnt++; } }
     }
-    const m = { x: (c.x0 + c.x1 + 1) / 2 / W * 100, y: (c.y0 + c.y1 + 1) / 2 / H * 100, w, h, fill, label: null, square: fill > 0.87, src, box: [c.x0, c.y0, c.x1, c.y1] };
+    const sat = Math.max(br, bgG, bb) - Math.min(br, bgG, bb);
+    const color = sat >= 45 ? '#' + [br, bgG, bb].map(v => v.toString(16).padStart(2, '0')).join('') : null;   // grey/black/white markers carry no route color
+    const m = { color, x: (c.x0 + c.x1 + 1) / 2 / W * 100, y: (c.y0 + c.y1 + 1) / 2 / H * 100, w, h, fill, label: null, square: fill > 0.87, src, box: [c.x0, c.y0, c.x1, c.y1] };
     // outer size: outlined shapes were measured inside the outline, so add its thickness back
     let t = 0; if (src === 'A') { const my = (c.y0 + c.y1) >> 1; for (let x = c.x0 - 1; x >= 0 && t < 30 && !open[my * W + x]; x--) t++; }
     const ow = w + 2 * t, oh = h + 2 * t;
@@ -1576,22 +1579,26 @@ function letterTemplates(letters) {
   }
   return out;
 }
+function setColor(sp, c) { if (c) sp.color = c; else delete sp.color; }
+// a ring in the color of the marker a circle covers, so you can still tell which route is whose
+function ringStyle(sp) { return sp.color ? `--rc:${sp.color};--rc-ink:${inkFor(sp.color)};` : ''; }
+function inkFor(hex) { const v = parseInt(hex.slice(1), 16); const l = ((v >> 16) & 255) * 0.299 + ((v >> 8) & 255) * 0.587 + (v & 255) * 0.114; return l > 150 ? '#111' : '#fff'; }
 async function autoPlace(play) {
   let marks; try { marks = await detectMarkers(await getBlob(play.imgId), play.side); } catch { return 0; }
   if (!marks.length || (!marks.some(m => m.label) && marks.length > play.spots.length + 3)) return 0;
   const used = new Set(); const done = new Set(); let n = 0;
   for (const sp of play.spots) {
     const i = marks.findIndex((m, j) => !used.has(j) && m.label && m.label === sp.label);
-    if (i >= 0) { used.add(i); done.add(sp.key); sp.x = +marks[i].x.toFixed(2); sp.y = +marks[i].y.toFixed(2); sp.d = marks[i].d; n++; }
+    if (i >= 0) { used.add(i); done.add(sp.key); sp.x = +marks[i].x.toFixed(2); sp.y = +marks[i].y.toFixed(2); sp.d = marks[i].d; setColor(sp, marks[i].color); n++; }
   }
   // anything left over (unlabeled markers, other playbooks): nearest spot wins
   const rest = marks.map((m, j) => ({ m, j })).filter(o => !used.has(o.j) && !o.m.label && !o.m.glyph && o.m.okSize !== false && !o.m.square);
   for (const sp of play.spots.filter(s => !done.has(s.key))) {
     let bi = -1, bd = Infinity;
     rest.forEach((o, k) => { if (o.taken) return; const dd = Math.hypot(o.m.x - sp.x, o.m.y - sp.y); if (dd < bd) { bd = dd; bi = k; } });
-    if (bi >= 0) { rest[bi].taken = true; sp.x = +rest[bi].m.x.toFixed(2); sp.y = +rest[bi].m.y.toFixed(2); sp.d = rest[bi].m.d; n++; }
+    if (bi >= 0) { rest[bi].taken = true; sp.x = +rest[bi].m.x.toFixed(2); sp.y = +rest[bi].m.y.toFixed(2); sp.d = rest[bi].m.d; setColor(sp, rest[bi].m.color); done.add(sp.key); n++; }
   }
-  if (n) play.spotsSet = true;
+  if (n) { play.spotsSet = true; for (const sp of play.spots) if (!done.has(sp.key)) delete sp.color; }
   // keep every circle on this play the same size, including positions that weren't found
   if (marks.ar) play.ar = marks.ar;
   if (marks.md) for (const sp of play.spots) sp.d = +marks.md.toFixed(2);
