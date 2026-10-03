@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.10.1';
+const APP_VERSION = '1.10.2';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -1344,23 +1344,25 @@ async function detectMarkers(blob, side) {
   pairs.sort((a, b) => b.sc - a.sc);
   for (const p of pairs) if (!p.m.label && room[p.L] > 0) { p.m.label = p.L; p.m.score = p.sc; room[p.L]--; }
   // markers in one drawing are all about the same size
-  const ds = out.filter(m => m.label).map(m => m.d).sort((a, b) => a - b);
+  let ds = out.filter(m => m.label && m.label !== 'C').map(m => m.d).sort((a, b) => a - b);
+  if (!ds.length) ds = out.filter(m => m.label).map(m => m.d).sort((a, b) => a - b);
   const md = ds.length ? ds[Math.floor(ds.length / 2)] : null;
   for (const m of out) m.okSize = !md || (m.d >= md * 0.6 && m.d <= md * 1.7);
-  for (const m of out) if (m.label && md && m.d < md * 0.75) m.label = null;           // too small: text or a route number, not a marker
+  // too small: text or a route number, not a marker (the C box is often drawn smaller than the ovals, so it gets more room)
+  for (const m of out) if (m.label && md && m.d < md * (m.label === 'C' && m.square ? 0.5 : 0.75)) m.label = null;
   // the center lines up with the QB
   const qb = out.find(m => m.label === 'Q');
   if (wantC) for (const m of out) if (m.label === 'C' && qb && Math.abs(m.x - qb.x) > 15) m.label = null;
   // C: a square reading "C" (or unreadable), marker-sized, and lined up with the QB when the QB was found
   const q = out.find(m => m.label === 'Q');
-  const cCands = !wantC || out.some(m => m.label === 'C') ? [] : out.filter(m => !m.label && m.square && (!m.glyph || m.scores.C >= 0.6)
-    && (!md || (m.d >= md * 0.7 && m.d <= md * 1.5)) && (!q || Math.abs(m.x - q.x) < 15));
+  const cCands = !wantC || out.some(m => m.label === 'C') ? [] : out.filter(m => !m.label && m.square && (!m.glyph || (m.scores.C >= 0.6 && 'COG0Q'.includes(m.best)))
+    && (!md || (m.d >= md * 0.5 && m.d <= md * 1.5)) && (!q || Math.abs(m.x - q.x) < 15));
   if (cCands.length) {
     cCands.sort((a, b) => q ? Math.hypot(a.x - q.x, (a.y - q.y) / 2) - Math.hypot(b.x - q.x, (b.y - q.y) / 2) : (b.scores?.C || 0) - (a.scores?.C || 0));
     cCands[0].label = 'C';
   }
   // keep circle sizes sensible even when a marker's outline ran into a route line
-  if (md) for (const m of out) if (m.label) m.d = +Math.min(Math.max(m.d, md * 0.8), md * 1.3).toFixed(2);
+  if (md) for (const m of out) if (m.label) m.d = +Math.min(Math.max(m.d, m.label === 'C' ? md * 0.5 : md * 0.8), md * 1.3).toFixed(2);
   return out;
 }
 // move a play's spots onto the markers found in its drawing; returns how many spots moved
