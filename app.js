@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.11.1';
+const APP_VERSION = '1.11.2';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -573,24 +573,7 @@ function fitStage() {
   let w = Math.min(W, H * r); let h = w / r;
   w = Math.max(w, 100); h = Math.max(h, 60);
   stage.style.width = w + 'px'; stage.style.height = h + 'px';
-  stage.style.setProperty('--tk', (uniformTk(W, H) || clamp(Math.round(w * 0.062 * (S.tokenScale || 1)), 36, 90)) + 'px');
-}
-// one circle size for every player on every play: big enough to cover the markers in (nearly) all drawings
-function uniformTk(W, H) {
-  const px = [];
-  for (const p of S.plays) {
-    if (!p.ar) continue;
-    const ds = p.spots.filter(s => s.label !== 'C').map(s => s.d).filter(Boolean).sort((a, b) => a - b);
-    if (!ds.length) continue;
-    const sw = Math.max(100, Math.min(W, H * p.ar));
-    px.push(sw * ds[Math.floor((ds.length - 1) / 2)] / 100);
-  }
-  if (!px.length) return 0;
-  px.sort((a, b) => a - b);
-  // err on the large side: cover the biggest markers, unless one drawing is way out of line with the rest
-  const med = px[Math.floor((px.length - 1) / 2)];
-  const v = Math.min(px[px.length - 1], med * 1.45) * 1.05;
-  return clamp(Math.round(v * (S.tokenScale || 1)), 34, 130);
+  stage.style.setProperty('--tk', clamp(Math.round(w * 0.062 * (S.tokenScale || 1)), 36, 90) + 'px');
 }
 window.addEventListener('resize', () => { if (ui.view === 'play' || ui.view === 'edit') { fitStage(); renderTokens(); } });
 
@@ -606,8 +589,14 @@ function renderTokens() {
     return `<div class="token${sel}" data-spot="${sp.key}" style="left:${pos.x}%;top:${pos.y}%;${tk}">${disc(pl)}<span class="tpos">${esc(sp.label)}</span>${p.side === 'O' && pl.qb ? '<span class="tqb" title="Thrower">QB</span>' : ''}${p.side === 'D' && pl.safety ? '<span class="tqb tsaf" title="Safety">S</span>' : ''}</div>`;
   }).join('');
 }
-// every circle uses the stage's single --tk size (set in fitStage)
-function tokenSize() { return ''; }
+// player circles cover the markers in the drawing; one size per play (the typical marker, as % of drawing width)
+function tokenSize(p) {
+  const stage = $('#stage'); const w = stage ? stage.clientWidth : 0; if (!w) return '';
+  const ds = p.spots.filter(x => x.label !== 'C').map(x => x.d).filter(Boolean).sort((a, b) => a - b);
+  const d = ds.length ? ds[Math.floor((ds.length - 1) / 2)] : p.spots.map(x => x.d).find(Boolean);
+  if (!d) return '';
+  return `--tk:${Math.max(26, Math.round(w * d / 100 * (S.tokenScale || 1)))}px`;
+}
 function renderBench() {
   const p = playById(ui.playId); const L = liveFor(p); const bench = $('#bench'); if (!bench) return;
   const onField = new Set(Object.values(L.lineup));
@@ -1793,7 +1782,7 @@ function renderSetup() {
         <label class="field"><span class="label">Defense</span><input type="text" data-poslist="D" value="${esc(posList('D').join(', '))}"></label>
       </div>
       <p class="help" style="margin:0">Comma-separated, in any order. Changing the list updates every play; positions that stay keep their spot. Repeat a name for two of the same (CB, CB).</p>
-      <div class="field"><span class="label">Player circle size (same on every play)</span>
+      <div class="field"><span class="label">Player circle size</span>
         <div class="seg seg-wrap">${[[0.85, 'Smaller'], [1, 'Auto'], [1.15, 'Larger'], [1.3, 'Largest']].map(([k, v]) => `<button type="button" class="${(S.tokenScale || 1) === k ? 'on' : ''}" data-act="tokenScale" data-k="${k}">${v}</button>`).join('')}</div>
       </div>
       <div class="row-wrap"><button type="button" class="btn primary" data-act="autoPlaceAll">Find players on all plays</button>
