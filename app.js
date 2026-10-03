@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.10.3';
+const APP_VERSION = '1.10.4';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -1258,7 +1258,7 @@ async function detectMarkers(blob, side) {
   for (let i = 0; i < N; i++) {
     const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2]; const sat = Math.max(r, g, b) - Math.min(r, g, b);
     lum[i] = r * 0.299 + g * 0.587 + b * 0.114;
-    open[i] = lum[i] < 100 && sat < 60 ? 0 : 1;          // method A: areas walled in by a dark outline
+    open[i] = lum[i] < 100 && sat < 60 ? 0 : 1;          // method A: areas walled in by a dark (even thin, faint) outline
     ink[i] = lum[i] < 228 || sat > 50 ? 1 : 0;            // method B: solid filled shapes (thin lines removed below)
   }
   const out = [];
@@ -1290,7 +1290,7 @@ async function detectMarkers(blob, side) {
     let t = 0; if (src === 'A') { const my = (c.y0 + c.y1) >> 1; for (let x = c.x0 - 1; x >= 0 && t < 30 && !open[my * W + x]; x--) t++; }
     const ow = w + 2 * t, oh = h + 2 * t;
     m.d = +((m.square ? Math.min(ow, oh) * 0.95 : (ow + oh) / 2 * 1.04) / W * 100).toFixed(2);
-    if (cnt > mw * mh * 0.04) { const cm = cleanMask(mask, mw, mh); m.glyph = glyphGrid(cm, mw, mh); m.glyphs = splitGlyphs(cm, mw, mh); } else m.glyph = null;
+    if (cnt > mw * mh * 0.04) { const cm = cleanMask(mask, mw, mh); m.glyph = glyphGrid(cm, mw, mh); m.glyphs = splitGlyphs(cm, mw, mh) || []; } else m.glyph = null;
     out.push(m);
   };
   const A = labelComps(open, W, H); for (const c of A.comps) consider(A.lab, c, false, 'A');
@@ -1298,13 +1298,23 @@ async function detectMarkers(blob, side) {
   // solid shapes, read twice: as drawn, and with letter strokes filled in (letters can split a small marker apart)
   const B = labelComps(morphOpen(ink, W, H, r), W, H); for (const c of B.comps) consider(B.lab, c, true, 'B');
   const B2 = labelComps(morphOpen(morphClose(ink, W, H, Math.max(2, Math.round(W * 0.003))), W, H, r), W, H); for (const c of B2.comps) consider(B2.lab, c, true, 'B');
+  // and once more with a heavier cut, which pulls apart markers that an arrowhead or route joins together
+  const B3 = labelComps(morphOpen(ink, W, H, Math.round(r * 2.2)), W, H); for (const c of B3.comps) consider(B3.lab, c, true, 'B');
   // a shape found both ways: keep the outlined version (its inside is cleaner for reading the letter)
   for (let i = out.length - 1; i >= 0; i--) {
     const o = out[i]; if (o.src !== 'B') continue;
     if (out.some(a => a.src === 'A' && a.x * W / 100 >= o.box[0] && a.x * W / 100 <= o.box[2] && a.y * H / 100 >= o.box[1] && a.y * H / 100 <= o.box[3])) out.splice(i, 1);
   }
   // ignore shapes sitting inside another shape (e.g. the hole in a letter)
-  for (let i = out.length - 1; i >= 0; i--) if (out.some(o => o !== out[i] && Math.abs(o.x - out[i].x) * W / 100 < o.w / 2 && Math.abs(o.y - out[i].y) * H / 100 < o.h / 2 && o.w * o.h > out[i].w * out[i].h)) out.splice(i, 1);
+  // ...but a big shape that swallows two or more separate shapes is several markers run together: drop the big one
+  const inside = (o, m) => o !== m && Math.abs(o.x - m.x) * W / 100 < o.w / 2 && Math.abs(o.y - m.y) * H / 100 < o.h / 2 && o.w * o.h > m.w * m.h;
+  const holds = o => out.filter(m => inside(o, m) && m.w * m.h > o.w * o.h * 0.12);
+  for (let i = out.length - 1; i >= 0; i--) {
+    const kids = holds(out[i]);
+    const distinct = kids.filter((k, j) => !kids.some((k2, j2) => j2 < j && Math.hypot((k.x - k2.x) * W, (k.y - k2.y) * H) / 100 < Math.min(k.w, k.h) / 2));
+    if (distinct.length >= 2) out.splice(i, 1);
+  }
+  for (let i = out.length - 1; i >= 0; i--) if (out.some(o => inside(o, out[i]))) out.splice(i, 1);
   // read every shape's letter against the whole alphabet and digits, so route numbers (1, 2, 3),
   // labels and banner text are recognised as "not a position" instead of being forced onto one
   const sides = side ? [side] : ['O', 'D'];
@@ -1337,7 +1347,8 @@ async function detectMarkers(blob, side) {
       const maxOther = Math.max(...ALL.filter(ch => !posL.includes(ch) && !look.includes(ch)).map(ch => m.scores[ch]));
       // shape is a hint, not a rule: C is usually the square, but some playbooks draw everyone as squares
       const sc = m.scores[L] + (L === 'C' ? (m.square ? 0.08 : -0.2) : (m.square ? -0.05 : 0));
-      if (m.scores[L] >= 0.65 && m.scores[L] >= maxOther - 0.06) pairs.push({ sc, m, L });
+      if (m.glyphs && m.glyphs.length !== 1) continue;   // several letters (a text box): not a single-letter marker
+      if (m.scores[L] >= 0.68 && m.scores[L] >= maxOther - 0.06) pairs.push({ sc, m, L });
       else if (L === 'Q' && !m.square && m.scores.Q >= 0.6 && 'OQ0D'.includes(m.best)) pairs.push({ sc: sc - 0.05, m, L });
     }
   }
@@ -1345,25 +1356,32 @@ async function detectMarkers(blob, side) {
   pairs.sort((a, b) => b.sc - a.sc);
   for (const p of pairs) if (!p.m.label && room[p.L] > 0) { p.m.label = p.L; p.m.score = p.sc; room[p.L]--; }
   // markers in one drawing are all about the same size
-  let ds = out.filter(m => m.label && m.label !== 'C').map(m => m.d).sort((a, b) => a - b);
+  // typical marker size: lower median of the confidently read, roughly round ones
+  // (a marker whose outline ran into an arrowhead measures too big, so it shouldn't set the size)
+  const round = m => m.w / m.h > 0.6 && m.w / m.h < 1.7;
+  let ds = out.filter(m => m.label && m.label !== 'C' && round(m)).map(m => m.d).sort((a, b) => a - b);
+  if (!ds.length) ds = out.filter(m => m.label && m.label !== 'C').map(m => m.d).sort((a, b) => a - b);
   if (!ds.length) ds = out.filter(m => m.label).map(m => m.d).sort((a, b) => a - b);
-  const md = ds.length ? ds[Math.floor(ds.length / 2)] : null;
+  const md = ds.length ? ds[Math.floor((ds.length - 1) / 2)] : null;
+  out.md = md;
   for (const m of out) m.okSize = !md || (m.d >= md * 0.6 && m.d <= md * 1.7);
-  // too small: text or a route number, not a marker (the C box is often drawn smaller than the ovals, so it gets more room)
-  for (const m of out) if (m.label && md && m.d < md * (m.label === 'C' && m.square ? 0.5 : 0.75)) m.label = null;
+  // much smaller than the rest: banner text or a route number, not a marker (unless the letter read very clearly)
+  for (const m of out) if (m.label && m.d < 3.5) m.label = null;                     // tiny: field numbers, legend text
+  for (const m of out) if (m.label && md && m.d < md * 0.5 || (m.label && md && m.label !== 'C' && m.d < md * 0.75 && (m.score || 0) < 0.75)) m.label = null;
   // the center lines up with the QB
   const qb = out.find(m => m.label === 'Q');
   if (wantC) for (const m of out) if (m.label === 'C' && qb && Math.abs(m.x - qb.x) > 15) m.label = null;
   // C: a square reading "C" (or unreadable), marker-sized, and lined up with the QB when the QB was found
   const q = out.find(m => m.label === 'Q');
-  const cCands = !wantC || out.some(m => m.label === 'C') ? [] : out.filter(m => !m.label && m.square && (!m.glyph || (m.scores.C >= 0.6 && m.scores.C >= Math.max(...'0123456789'.split('').map(d => m.scores[d]))))
-    && (!md || (m.d >= md * 0.5 && m.d <= md * 1.5)) && (!q || Math.abs(m.x - q.x) < 15));
+  const cCands = !wantC || out.some(m => m.label === 'C') || !(md || q) ? [] : out.filter(m => !m.label && m.square && (!m.glyph || (m.glyphs?.length === 1 && m.scores.C >= 0.6 && m.scores.C >= Math.max(...'0123456789'.split('').map(d => m.scores[d]))))
+    && m.d >= 3.5 && (!md || (m.d >= md * 0.5 && m.d <= md * 1.5)) && (!q || Math.abs(m.x - q.x) < 15));
   if (cCands.length) {
     cCands.sort((a, b) => q ? Math.hypot(a.x - q.x, (a.y - q.y) / 2) - Math.hypot(b.x - q.x, (b.y - q.y) / 2) : (b.scores?.C || 0) - (a.scores?.C || 0));
     cCands[0].label = 'C';
   }
   // keep circle sizes sensible even when a marker's outline ran into a route line
-  if (md) for (const m of out) if (m.label) m.d = +Math.min(Math.max(m.d, m.label === 'C' ? md * 0.5 : md * 0.8), md * 1.3).toFixed(2);
+  // one circle size per drawing: every player matches the typical marker; C may be a bit smaller
+  if (md) for (const m of out) if (m.label) m.d = +(m.label === 'C' ? Math.min(Math.max(m.d, md * 0.6), md) : md).toFixed(2);
   return out;
 }
 // move a play's spots onto the markers found in its drawing; returns how many spots moved
@@ -1493,6 +1511,8 @@ async function autoPlace(play) {
     if (bi >= 0) { rest[bi].taken = true; sp.x = +rest[bi].m.x.toFixed(2); sp.y = +rest[bi].m.y.toFixed(2); sp.d = rest[bi].m.d; n++; }
   }
   if (n) play.spotsSet = true;
+  // keep every circle on this play the same size, including positions that weren't found
+  if (marks.md) for (const sp of play.spots) sp.d = sp.label === 'C' ? +Math.min(sp.d || marks.md, marks.md).toFixed(2) : +marks.md.toFixed(2);
   return n;
 }
 /* spot mirrored / repeated drawings: compare a coarse "ink mask" of each drawing with the one before it */
