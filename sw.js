@@ -1,5 +1,5 @@
 // Offline cache for Huddle. Bump CACHE when you deploy a new version.
-const CACHE = 'huddle-v1.13.0';
+const CACHE = 'huddle-v1.13.1';
 const ASSETS = [
   './', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest',
   'jszip.min.js', 'pdf.min.js', 'pdf.worker.min.js',

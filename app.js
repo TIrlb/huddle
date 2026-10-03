@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.13.0';
+const APP_VERSION = '1.13.1';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -530,7 +530,7 @@ function renderPlay() {
       <button type="button" class="btn" data-act="rotate" title="Everyone moves one spot; next bench player comes in">Rotate</button>
       <button type="button" class="btn ${ui.flips.has(p.id) ? 'toggled' : ''}" data-act="flip" title="Mirror the play left/right">Flip</button>
       <button type="button" class="btn ${ui.draw.on ? 'toggled' : ''}" data-act="drawMode" title="Draw on the play">Draw</button>
-      <button type="button" class="btn" data-act="resetLive" title="Forget this play's lineup and fill it fresh; un-flip">Reset</button>
+      <button type="button" class="btn" data-act="resetLive" title="Put circles back on the drawing's spots, forget this play's lineup and fill it fresh; un-flip">Reset</button>
       <button type="button" class="btn" data-act="editPlay">Edit</button>
       <button type="button" class="btn" data-act="fullScreen" aria-label="Full screen" title="Full screen (or tap the field)">⤢</button>
     </div>
@@ -662,11 +662,18 @@ function renderHint() {
     h.innerHTML = `<span><b>${esc(player(ui.benchSel)?.name)}</b> is going in. Tap the player coming out.</span><button type="button" class="btn small ghost" data-act="clearSel">Cancel</button>`;
   } else {
     h.className = 'hint';
-    h.textContent = 'Tap a player to sub or swap. Drag a player onto another to swap them, or anywhere else to show where they go. Tap the field for full screen.';
+    h.textContent = 'Tap a player to sub or swap. Drag a player onto another to swap them, or anywhere else to move their spot (Reset puts it back). Tap the field for full screen.';
   }
 }
 function refreshLive() { renderTokens(); renderBench(); renderHint(); }
 // any lineup change you make on a play (sub, swap, take out, rotate) becomes that play's lineup until you change it again or Reset
+// a circle dragged to a new place stays there on this play (Reset puts it back where the drawing has it)
+function keepSpot(key) {
+  const p = playById(ui.playId); const L = liveFor(p); const sp = p.spots.find(s => s.key === key); const np = L.pos[key];
+  if (!sp || !np) return;
+  if (sp.ox == null) { sp.ox = sp.x; sp.oy = sp.y; }
+  sp.x = +np.x.toFixed(2); sp.y = +np.y.toFixed(2); delete L.pos[key]; save();
+}
 function keepLineup() {
   const p = playById(ui.playId); if (!p) return; const L = liveFor(p);
   p.assign ||= {}; p.assign[L.groupId] = { ...L.lineup }; save();
@@ -740,7 +747,7 @@ function bindStage(mode) {
       tk.removeEventListener('pointermove', move); tk.removeEventListener('pointerup', up); tk.removeEventListener('pointercancel', up);
       tk.classList.remove('dragging');
       if (mode === 'live' && hot) { hot.classList.remove('drop-hot'); swapSpots(key, hot.dataset.spot); return; }
-      if (mode === 'live') { if (!dragging) tapToken(key); }
+      if (mode === 'live') { if (!dragging) tapToken(key); else keepSpot(key); }
       else { if (dragging) save(); else { ui.edit.selSpot = ui.edit.selSpot === key ? null : key; renderSpotTokens(); renderEditPanel(); } }
     };
     tk.addEventListener('pointermove', move); tk.addEventListener('pointerup', up); tk.addEventListener('pointercancel', up);
@@ -1430,7 +1437,10 @@ async function detectMarkers(blob, side) {
   }
   const room = {}; for (const L of posL) room[L] = Math.max(1, ...sides.map(sd => posList(sd).filter(x => x === L).length));
   pairs.sort((a, b) => b.sc - a.sc);
-  for (const p of pairs) if (!p.m.label && room[p.L] > 0) { p.m.label = p.L; p.m.score = p.sc; room[p.L]--; }
+  // the same marker is often found by more than one pass: once one reading of it is named, the others are taken too
+  const sameSpot = (a, b) => a !== b && Math.hypot((a.x - b.x) * W, (a.y - b.y) * H) / 100 < Math.min(a.w, a.h, b.w, b.h) * 0.5;
+  const taken = m => out.some(o => o.label && sameSpot(o, m));
+  for (const p of pairs) if (!p.m.label && room[p.L] > 0 && !taken(p.m)) { p.m.label = p.L; p.m.score = p.sc; room[p.L]--; }
   // markers in one drawing are all about the same size
   // typical marker size: lower median of the confidently read, roughly round ones
   // (a marker whose outline ran into an arrowhead measures too big, so it shouldn't set the size)
@@ -1449,7 +1459,7 @@ async function detectMarkers(blob, side) {
   // otherwise trust whichever read more clearly
   const qb = out.find(m => m.label === 'Q'), cm = out.find(m => m.label === 'C');
   if (wantC && qb && cm && Math.abs(cm.x - qb.x) > 15) {
-    const alt = pairs.filter(p => p.L === 'Q' && !p.m.label && Math.abs(p.m.x - cm.x) <= 15 && p.m.d >= (md || 0) * 0.6).sort((a, b) => b.sc - a.sc)[0];
+    const alt = pairs.filter(p => p.L === 'Q' && !p.m.label && !out.some(o => o.label && o !== qb && sameSpot(o, p.m)) && Math.abs(p.m.x - cm.x) <= 15 && p.m.d >= (md || 0) * 0.6).sort((a, b) => b.sc - a.sc)[0];
     if (alt) { qb.label = null; alt.m.label = 'Q'; alt.m.score = alt.sc; }
     else if ((cm.score || 0) >= (qb.score || 0) + 0.05 && cm.square) qb.label = null;
     else cm.label = null;
@@ -1458,6 +1468,7 @@ async function detectMarkers(blob, side) {
   const q = out.find(m => m.label === 'Q');
   const cCands = !wantC || out.some(m => m.label === 'C') || !(md || q) ? [] : out.filter(m => !m.label && m.square && (!m.glyph || (m.glyphs?.length === 1 && m.scores.C >= 0.6 && m.scores.C >= Math.max(...'0123456789'.split('').map(d => m.scores[d]))))
     && m.d >= 3.5 && (!md || (m.d >= md * 0.5 && m.d <= md * 1.5)) && (!q || Math.abs(m.x - q.x) < 15));
+  for (let i = cCands.length - 1; i >= 0; i--) if (taken(cCands[i])) cCands.splice(i, 1);
   if (cCands.length) {
     cCands.sort((a, b) => q ? Math.hypot(a.x - q.x, (a.y - q.y) / 2) - Math.hypot(b.x - q.x, (b.y - q.y) / 2) : (b.scores?.C || 0) - (a.scores?.C || 0));
     cCands[0].label = 'C';
@@ -1589,6 +1600,7 @@ async function autoPlace(play) {
   const used = new Set(); const done = new Set(); let n = 0;
   for (const sp of play.spots) {
     const i = marks.findIndex((m, j) => !used.has(j) && m.label && m.label === sp.label);
+    delete sp.ox; delete sp.oy;
     if (i >= 0) { used.add(i); done.add(sp.key); sp.x = +marks[i].x.toFixed(2); sp.y = +marks[i].y.toFixed(2); sp.d = marks[i].d; setColor(sp, marks[i].color); n++; }
   }
   // anything left over (unlabeled markers, other playbooks): nearest spot wins
@@ -2073,7 +2085,9 @@ const ACT = {
   inkClear: b => { if (!armed(b, 'Tap again to clear')) return; const p = playById(ui.playId); p.ink = []; save(); renderInk(); renderHint(); },
   resetLive: () => {
     const p = playById(ui.playId); const gid = groupForSide(p.side).id;
-    if (p.assign?.[gid]) { delete p.assign[gid]; save(); }
+    if (p.assign?.[gid]) delete p.assign[gid];
+    for (const sp of p.spots) if (sp.ox != null) { sp.x = sp.ox; sp.y = sp.oy; delete sp.ox; delete sp.oy; }
+    save();
     ui.live.delete(ui.playId); ui.flips.delete(ui.playId); ui.sel = null; ui.benchSel = null; renderPlay(); },
   saveDefault: () => {
     const p = playById(ui.playId); const L = liveFor(p);
