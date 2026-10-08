@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.14.0';
+const APP_VERSION = '1.15.0';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -222,8 +222,7 @@ function ensureGame() {
   const g = currentGame();
   if (g && g.date === todayStr()) return g;
   const ng = { id: uid(), date: todayStr(), opp: '' };
-  S.games.push(ng); S.gameId = ng.id;
-  S.players.forEach(p => { p.out = false; });
+  S.games.push(ng); S.gameId = ng.id;   // Out stays as the coach set it: it carries across days until changed
   save();
   return ng;
 }
@@ -240,25 +239,63 @@ function callCounts(gameId = S.gameId) {
 
 /* ---------------- lineup logic ---------------- */
 const isSafetySpot = sp => /^(S|FS|SS)\d*$/i.test(sp.label || '');
-function fillLineup(play, gid) {
+/* Each play keeps a saved lineup per group: p.assign[gid][spot] = player id ('' = left empty on purpose).
+   When that kid is Out, p.fill[gid][spot] holds who plays the spot instead; the kid gets the spot back when marked In.
+   Spots with no one saved get picked once and saved (persist=true), so a play's lineup never changes on its own. */
+function fillLineup(play, gid, persist = false) {
   const present = S.players.filter(p => p.groupId === gid && !p.out);
-  const def = (play.assign && play.assign[gid]) || {};
-  const lineup = {}; const used = new Set();
+  const isPresent = id => present.some(p => p.id === id);
+  const base = (play.assign && play.assign[gid]) || {}; const fills = (play.fill && play.fill[gid]) || {};
+  const lineup = {}; const used = new Set(); const held = new Set();
   const safetyRule = play.side === 'D' && play.spots.some(isSafetySpot);
-  for (const sp of play.spots) {
-    const pid = def[sp.key];
-    if (safetyRule && isSafetySpot(sp) && !player(pid)?.safety) continue;   // only kids marked S play safety
-    if (pid && present.some(p => p.id === pid) && !used.has(pid)) { lineup[sp.key] = pid; used.add(pid); }
+  // a saved kid who still belongs in this spot (in this group, and marked S if it's a safety spot)
+  const owner = sp => { const k = player(base[sp.key]); return k && k.groupId === gid && (!safetyRule || !isSafetySpot(sp) || k.safety) ? k : null; };
+  const fits = (sp, id) => !safetyRule || !isSafetySpot(sp) || player(id)?.safety;
+  for (const sp of play.spots) {   // 1) saved kids who are here
+    if (base[sp.key] === '') { held.add(sp.key); continue; }
+    const k = owner(sp); if (k && !k.out && !used.has(k.id)) { lineup[sp.key] = k.id; used.add(k.id); }
   }
+  for (const sp of play.spots) {   // 2) saved fill-ins for kids who are Out
+    const k = owner(sp); if (!k || !k.out) continue;
+    const f = fills[sp.key];
+    if (f === '') { held.add(sp.key); continue; }
+    if (f && isPresent(f) && !used.has(f) && fits(sp, f)) { lineup[sp.key] = f; used.add(f); }
+  }
+  const auto = autoFill(play, present, lineup, used, held, safetyRule);
+  if (persist && auto.length) {
+    play.assign ||= {}; play.assign[gid] ||= {}; play.fill ||= {}; play.fill[gid] ||= {};
+    for (const key of auto) {
+      const sp = play.spots.find(s => s.key === key); const k = owner(sp);
+      if (k && k.out) play.fill[gid][key] = lineup[key]; else play.assign[gid][key] = lineup[key];
+    }
+    save();
+  }
+  return lineup;
+}
+// save the on-field lineup as this play's lineup (any sub, swap, rotate or take-out the coach makes)
+function commitLineup(play, gid, lineup) {
+  play.assign ||= {}; play.assign[gid] ||= {}; play.fill ||= {}; play.fill[gid] ||= {};
+  const base = play.assign[gid], fills = play.fill[gid];
+  for (const sp of play.spots) {
+    const now = lineup[sp.key] || ''; const k = player(base[sp.key]);
+    if (k && k.groupId === gid && k.out && k.id !== now) fills[sp.key] = now;   // the Out kid keeps the spot; this is who covers it
+    else { base[sp.key] = now; delete fills[sp.key]; }
+  }
+  save();
+}
+// pick kids for spots nobody is saved in; returns the spot keys it filled
+function autoFill(play, present, lineup, used, held, safetyRule) {
+  const before = new Set(Object.keys(lineup));
   const snaps = snapCounts(play.side); const rnd = new Map(present.map(p => [p.id, Math.random()]));
   const fewest = (a, b) => (snaps[a.id] || 0) - (snaps[b.id] || 0) || rnd.get(a.id) - rnd.get(b.id);
   // safeties first, from the kids marked S (fewest snaps first); a safety spot stays empty if none are left
   if (safetyRule) {
     const safeties = present.filter(p => p.safety && !used.has(p.id)).sort(fewest);
-    for (const sp of play.spots) if (isSafetySpot(sp) && !lineup[sp.key] && safeties.length) { const k = safeties.shift(); lineup[sp.key] = k.id; used.add(k.id); }
+    for (const sp of play.spots) if (isSafetySpot(sp) && !held.has(sp.key) && !lineup[sp.key] && safeties.length) { const k = safeties.shift(); lineup[sp.key] = k.id; used.add(k.id); }
   }
-  const open = play.spots.filter(sp => !lineup[sp.key] && !(safetyRule && isSafetySpot(sp)));
-  if (!open.length) return lineup;
+  const filled = () => Object.keys(lineup).filter(k => !before.has(k));
+  const open = play.spots.filter(sp => !lineup[sp.key] && !held.has(sp.key) && !(safetyRule && isSafetySpot(sp)));
+  if (!open.length) return filled();
   // who plays: fewest snaps this game, ties broken randomly
   const pool = present.filter(p => !used.has(p.id)).sort(fewest).slice(0, open.length);
   // offense always has a thrower out there: swap in the QB with the fewest snaps for the last pick
@@ -279,7 +316,7 @@ function fillLineup(play, gid) {
   };
   const best = bestAssignment(pool, open, cost);
   best.forEach((p, i) => { if (p) lineup[open[i].key] = p.id; });
-  return lineup;
+  return filled();
 }
 function positionCounts(side, gameId = S.gameId) {
   const c = {};
@@ -502,7 +539,7 @@ function renderGrid() {
 function liveFor(play) {
   const gid = groupForSide(play.side).id;
   let L = ui.live.get(play.id);
-  if (!L || L.groupId !== gid) { L = { groupId: gid, lineup: fillLineup(play, gid), pos: {} }; ui.live.set(play.id, L); }
+  if (!L || L.groupId !== gid) { L = { groupId: gid, lineup: fillLineup(play, gid, true), pos: {} }; ui.live.set(play.id, L); }
   const keys = new Set(play.spots.map(s => s.key));
   for (const k of Object.keys(L.lineup)) if (!keys.has(k) || !player(L.lineup[k])) delete L.lineup[k];
   return L;
@@ -537,12 +574,13 @@ function renderPlay() {
     <button type="button" class="btn log" data-act="openLog">LOG</button>
   </div>
   <div class="hint" id="hint"></div>
-  <div class="stage-wrap" id="stageWrap">${navArrows(p)}<div class="stage${ui.flips.has(p.id) ? ' flipped' : ''}${ui.draw.on ? ' drawing' : ''}${ui.draw.erase ? ' erasing' : ''}" id="stage"><img id="stageImg" alt=""><svg id="ink" class="ink" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg><div id="tokens"></div></div></div>
+  <div class="stage-wrap" id="stageWrap">${navArrows(p)}<div class="tally" id="tally" hidden></div><div class="stage${ui.flips.has(p.id) ? ' flipped' : ''}${ui.draw.on ? ' drawing' : ''}${ui.draw.erase ? ' erasing' : ''}" id="stage"><img id="stageImg" alt=""><svg id="ink" class="ink" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg><div id="tokens"></div></div></div>
   <div class="fullbar" id="fullbar" hidden></div>
   <div class="bench" id="bench"></div>`;
   setupStage(p, 'live');
   renderBench();
   renderHint();
+  renderTally(); pushLineup();
 }
 function navArrows(p) {
   const ids = ui.navIds.filter(id => playById(id)); const i = ids.indexOf(p.id);
@@ -655,19 +693,17 @@ function renderHint() {
     const pl = player(L.lineup[ui.sel]);
     h.className = 'hint active';
     h.innerHTML = `<span><b>${esc(pl ? pl.name : 'Empty spot')}</b> selected. Tap a bench player to sub in, or another player to swap spots.</span>
-      ${pl ? `<button type="button" class="btn small" data-act="benchIt">Take out</button><button type="button" class="btn small danger" data-act="sitOut">Out for today</button>` : ''}
+      ${pl ? `<button type="button" class="btn small" data-act="benchIt">Take out</button><button type="button" class="btn small danger" data-act="sitOut">Mark Out</button>` : ''}
       <button type="button" class="btn small ghost" data-act="clearSel">Cancel</button>`;
   } else if (ui.benchSel) {
     h.className = 'hint active';
     h.innerHTML = `<span><b>${esc(player(ui.benchSel)?.name)}</b> is going in. Tap the player coming out.</span><button type="button" class="btn small ghost" data-act="clearSel">Cancel</button>`;
   } else {
-    const base = baseOf(p, L.groupId); const subs = base ? p.spots.filter(sp => { const bp = player(base[sp.key]); return bp && !bp.out && bp.groupId === L.groupId && base[sp.key] !== L.lineup[sp.key]; }).length : 0;
-    if (subs) { h.className = 'hint active'; h.innerHTML = `<span><b>${subs} spot${subs > 1 ? 's' : ''} changed for this snap.</b> The play's lineup comes back after LOG.</span><button type="button" class="btn small" data-act="keepNow">Keep for this play</button><button type="button" class="btn small ghost" data-act="backToBase">Undo subs</button>`; return; }
     h.className = 'hint';
-    h.textContent = 'Tap a player to sub or swap. Drag a player onto another to swap them, or anywhere else to move their spot (Reset puts it back). Tap the field for full screen.';
+    h.textContent = 'Lineup saves automatically and only changes when you change it. Tap a player to sub or swap; drag one onto another to swap, or anywhere else to move their spot. Tap the field for full screen.';
   }
 }
-function refreshLive() { renderTokens(); renderBench(); renderHint(); }
+function refreshLive() { renderTokens(); renderBench(); renderHint(); renderTally(); pushLineup(); }
 // any lineup change you make on a play (sub, swap, take out, rotate) becomes that play's lineup until you change it again or Reset
 // a circle dragged to a new place stays there on this play (Reset puts it back where the drawing has it)
 function keepSpot(key) {
@@ -676,35 +712,25 @@ function keepSpot(key) {
   if (sp.ox == null) { sp.ox = sp.x; sp.oy = sp.y; }
   sp.x = +np.x.toFixed(2); sp.y = +np.y.toFixed(2); delete L.pos[key]; save();
 }
-/* each play keeps a practiced lineup per group (p.assign). Swapping spots changes it.
-   Subs from the bench (and Rotate, Take out, Out for today) are for this snap only once a lineup is set:
-   the practiced lineup comes back after LOG. Until a play has a lineup, the first changes set it. */
-function baseOf(p, gid) { const a = p.assign?.[gid]; return a && Object.keys(a).length ? a : null; }
+/* every lineup change on a play (sub, swap, rotate, take out) is saved as that play's lineup right away */
 function keepLineup() {
   const p = playById(ui.playId); if (!p) return; const L = liveFor(p);
-  p.assign ||= {}; p.assign[L.groupId] = { ...L.lineup }; save();
+  commitLineup(p, L.groupId, L.lineup);
 }
-function keepSwap(a, b) {
-  const p = playById(ui.playId); const L = liveFor(p); const base = baseOf(p, L.groupId);
-  if (!base) return keepLineup();
-  const x = base[a], y = base[b];
-  if (y) base[a] = y; else delete base[a];
-  if (x) base[b] = x; else delete base[b];
-  save();
-}
-function keepSub(msg) {
-  const p = playById(ui.playId); const L = liveFor(p);
-  if (!baseOf(p, L.groupId)) return keepLineup();
-  toast(`${msg} for this snap`, { label: 'Keep for this play', fn: () => { keepLineup(); renderHint(); toast('Saved as this play\'s lineup'); } });
-}
+const keepSwap = keepLineup;
+function keepSub() { keepLineup(); }
 
 function subIn(spotKey, pid) {
   const p = playById(ui.playId); const L = liveFor(p);
   const from = Object.keys(L.lineup).find(k => L.lineup[k] === pid); const outPid = L.lineup[spotKey];
   if (from) { ui.sel = null; ui.benchSel = null; return swapSpots(from, spotKey); }   // already on the field: that's a swap
   L.lineup[spotKey] = pid;
-  const pl = player(pid); if (pl && pl.out) { pl.out = false; save(); }
-  keepSub(`${firstName(pl)} in${outPid && player(outPid) ? ` for ${firstName(player(outPid))}` : ''}`); ui.sel = null; ui.benchSel = null; refreshLive();
+  const pl = player(pid);
+  if (pl && pl.out) {   // putting an Out kid on the field marks them back In everywhere
+    pl.out = false; for (const k of [...ui.live.keys()]) if (k !== p.id) ui.live.delete(k);
+    toast(`${firstName(pl)} is marked In again`);
+  }
+  keepSub(); ui.sel = null; ui.benchSel = null; refreshLive(); pushLineup();
 }
 // dropped one player on another: they trade spots; the dragged circle snaps back to its spot
 function swapSpots(a, b) {
@@ -874,6 +900,110 @@ function rotateLive() {
   keepSub('Rotated'); ui.sel = null; ui.benchSel = null; refreshLive();
 }
 
+/* ================= ASSISTANT LINK (coach side) =================
+   An assistant logs from their phone (log.html). This iPad tells it which play and group are up, and
+   adds whatever it logs to this game's stats. See link.js for the relay and encryption. */
+const hasLink = () => typeof HLink !== "undefined";
+let LINK = null, linkSeen = +lsGet('linkSeen') || 0, lastCur = '', curTimer = null;
+const linkOn = () => !!(S?.link?.on && hasLink() && window.crypto?.subtle);
+function startLink() {
+  LINK?.close(); LINK = null; lastCur = '';
+  if (!linkOn()) return;
+  LINK = HLink.connect({ topic: S.link.topic, key: S.link.key, onMsg: onLinkMsg, onStatus: renderLinkStatus });
+}
+function noteSeen() { linkSeen = Date.now(); lsSet('linkSeen', String(linkSeen)); }
+function onLinkMsg(m) {
+  if (m.type === 'hello') { noteSeen(); lastCur = ''; pushLineup(true); renderLinkStatus(); if (!m.quiet) toast('Assistant logger connected'); return; }
+  if (m.type === 'log' && m.entry) { noteSeen(); ingestLog(m.entry); return; }
+  if (m.type === 'del' && m.id) {
+    const e = S.logs.find(l => l.id === m.id); if (!e) return;
+    removeLogPoints(e); S.logs = S.logs.filter(l => l.id !== m.id); save(); renderScore(); afterLinkLog();
+    toast('Assistant removed a log');
+  }
+}
+function gameForTime(t) {
+  const d = new Date(t || Date.now()); const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  if (ds === todayStr()) return ensureGame();
+  return S.games.filter(g => g.date === ds).pop() || ensureGame();
+}
+function ingestLog(e) {
+  if (!e.id || S.logs.some(l => l.id === e.id)) return;   // relay can repeat messages after a reconnect
+  const side = e.side === 'D' ? 'D' : 'O'; const g = gameForTime(e.t);
+  const entry = { id: e.id, t: e.t || Date.now(), gameId: g.id, playId: e.playId && playById(e.playId) ? e.playId : null, flip: false, side,
+    groupId: e.groupId || groupForSide(side).id, lineup: e.lineup || {}, marks: e.marks || {}, result: e.result || null, gain: e.gain || null, by: 'assistant' };
+  const pts = pointsFor(side, entry.result); if (pts) { entry.pts = pts; addPoints(g, pts[0], pts[1], entry.id); }
+  S.logs.push(entry); save(); renderScore(); afterLinkLog();
+  toast(`Assistant logged ${e.playName || 'a play'}${entry.result ? ' · ' + entry.result : ''}`);
+}
+function afterLinkLog() {
+  if (ui.view === 'play') { renderTally(); renderBench(); }
+  else if (ui.view === 'stats') renderStats();
+}
+// what the logger should show: the play on screen once the coach has stayed on it a few seconds
+function curMsg() {
+  const play = ui.view === 'play' ? playById(ui.playId) : null; if (!play) return null;
+  const L = liveFor(play); const g = group(L.groupId); const side = play.side;
+  return { type: 'cur', team: S.team, colors: S.colors, side, group: { id: g.id, name: g.name, color: g.color },
+    play: { id: play.id, name: play.name, spots: play.spots.map(sp => [sp.key, sp.label]) }, lineup: { ...L.lineup },
+    kids: S.players.filter(p => p.groupId === g.id).map(p => ({ id: p.id, n: firstName(p), i: initials(p), qb: !!p.qb, out: !!p.out })),
+    acts: S.actions[side].map(a => ({ id: a.id, label: a.label, multi: !!a.multi })), res: S.results[side], gains: S.gains || DEFAULT_GAINS };
+}
+function pushLineup(now) {
+  if (!LINK) return;
+  clearTimeout(curTimer);
+  curTimer = setTimeout(() => {
+    const msg = curMsg(); if (!msg) return;
+    const str = JSON.stringify(msg); if (!now && str === lastCur) return; lastCur = str;
+    LINK.send(msg).catch(() => { lastCur = ''; });
+  }, now ? 0 : 3000);
+}
+function renderLinkStatus() {
+  const el = $('#linkStatus'); if (!el) return;
+  const st = LINK?.status() || 'off'; const ago = linkSeen ? Math.round((Date.now() - linkSeen) / 60000) : null;
+  el.innerHTML = !linkOn() ? 'Off' : `<span class="ldot ${st}"></span>${st === 'live' ? 'Connected to relay' : 'No signal, will catch up when back'}${ago != null ? ` · assistant last heard ${ago < 1 ? 'just now' : ago + ' min ago'}` : ' · no assistant has joined yet'}`;
+}
+const logLink = () => `${location.href.replace(/[#?].*$/, '').replace(/[^/]*$/, '')}log.html#p=${HLink.enc64(new TextEncoder().encode(JSON.stringify({ t: S.link.topic, k: S.link.key, team: S.team })))}`;
+function linkPanel() {
+  if (!hasLink() || !window.crypto?.subtle) return `<div class="panel"><h3>Assistant logger</h3><p class="help" style="margin:0">Needs the app opened from its web address (https).</p></div>`;
+  const on = linkOn();
+  return `<div class="panel"><h3>Assistant logger</h3>
+    <p class="help" style="margin:0">Hand logging to an assistant. They scan this code with their phone camera and get a logging page that follows the play on your screen. What they log shows up here within a few seconds, in Stats and on the scoreboard, and the counts show on the play screen. Needs cell signal on both devices; logs wait and send when signal comes back. Messages are encrypted; only devices that scanned this code can read them.</p>
+    ${on ? `<div class="linkbox"><div class="qr" id="linkQr"></div><div class="linkside">
+        <div class="muted" id="linkStatus"></div>
+        <div class="row-wrap"><button type="button" class="btn" data-act="shareLink">Share link</button><button type="button" class="btn" data-act="newLink">New code</button><button type="button" class="btn ghost" data-act="linkOff">Turn off</button></div>
+        <p class="help" style="margin:0">New code disconnects every phone that scanned the old one.</p></div></div>`
+      : `<div class="row-wrap"><button type="button" class="btn primary" data-act="linkOnBtn">Turn on assistant logger</button></div>`}
+  </div>`;
+}
+function drawLinkQr() {
+  const box = $('#linkQr'); if (!box || !linkOn() || !(typeof qrcode !== 'undefined')) return;
+  const q = qrcode(0, 'L'); q.addData(logLink()); q.make();
+  box.innerHTML = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+  renderLinkStatus();
+}
+
+/* run/throw/catch counts for the group on the field, shown over the play */
+const TALLY = [['R', /^(run|rush)/i, 'Runs'], ['T', /^(pass|throw)/i, 'Throws'], ['C', /^catch/i, 'Catches']];
+function tallyCounts(gid) {
+  const ids = side => Object.fromEntries(TALLY.map(([k, rx]) => [k, new Set(S.actions[side].filter(a => rx.test(a.label)).map(a => a.id))]));
+  const c = {}; const bySide = { O: ids('O'), D: ids('D') };
+  for (const l of S.logs) {
+    if (l.gameId !== S.gameId || l.side !== 'O') continue;
+    for (const [aid, pids] of Object.entries(l.marks || {})) for (const [k, set] of Object.entries(bySide.O)) if (set.has(aid)) for (const pid of pids) { (c[pid] ||= { R: 0, T: 0, C: 0 })[k]++; }
+  }
+  return S.players.filter(p => p.groupId === gid && !p.out).map(p => ({ p, n: c[p.id] || { R: 0, T: 0, C: 0 } }));
+}
+function renderTally() {
+  const box = $('#tally'); if (!box) return;
+  const p = playById(ui.playId);
+  if (!p || p.side !== 'O' || lsGet('tally') === 'off') { box.hidden = p?.side !== 'O'; box.className = 'tally min'; box.innerHTML = p?.side === 'O' ? `<button type="button" class="tally-btn" data-act="tallyToggle" aria-label="Show touch counts">R·T·C</button>` : ''; return; }
+  const rows = tallyCounts(liveFor(p).groupId);
+  const tot = r => r.n.R + r.n.T + r.n.C; const low = Math.min(...rows.map(tot));
+  box.hidden = false; box.className = 'tally';
+  box.innerHTML = `<table><thead><tr><th><button type="button" class="tally-x" data-act="tallyToggle" aria-label="Hide touch counts">✕</button></th>${TALLY.map(([k, , t]) => `<th title="${t}">${k}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r => `<tr class="${rows.length > 1 && tot(r) === low ? 'due' : ''}"><td>${esc(initials(r.p))}</td>${TALLY.map(([k]) => `<td>${r.n[k] || '·'}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+}
+
 /* ================= LOG SHEET ================= */
 function openLog(play, lineup, groupId) {
   ui.logDraft = { play, side: play.side, groupId, lineup: { ...lineup }, marks: {}, result: null };
@@ -908,6 +1038,7 @@ function saveLog() {
   const pts = pointsFor(d.side, d.result);
   if (pts) { entry.pts = pts; addPoints(g, pts[0], pts[1], entry.id); }
   S.logs.push(entry); save(); renderScore();
+  LINK?.send({ type: 'logged', id: entry.id, play: d.play.name }).catch(() => { });
   ui.lastLineup[d.side + d.groupId] = d.lineup;
   if (d.play.id) ui.live.delete(d.play.id);
   closeSheet(); ui.logDraft = null; ui.sel = null; ui.benchSel = null; ui.draw.on = false;
@@ -1794,7 +1925,7 @@ function renderStats() {
         const acts = S.actions[l.side]; const d = new Date(l.t);
         const parts = acts.filter(a => l.marks?.[a.id]?.length).map(a => `${esc(a.label)}: ${l.marks[a.id].map(pid => esc(firstName(player(pid)))).join(', ')}`);
         return `<div class="logitem"><span class="muted">${d.getHours() % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')}</span><span class="side-badge">${l.side}</span>
-          <div style="min-width:0"><b>${esc(l.playId ? (playById(l.playId)?.name || 'Deleted play') : 'Quick log')}</b>${l.gain ? ` · ${esc(l.gain)}${/^(small|medium|big)$/i.test(l.gain) ? ' gain' : ''}` : ''}${l.result ? ` · ${esc(l.result)}` : ''}<div class="muted">${parts.join(' · ') || 'No marks'}</div></div>
+          <div style="min-width:0"><b>${esc(l.playId ? (playById(l.playId)?.name || 'Deleted play') : 'Quick log')}</b>${l.by === 'assistant' ? ' <span class="muted">(assistant)</span>' : ''}${l.gain ? ` · ${esc(l.gain)}${/^(small|medium|big)$/i.test(l.gain) ? ' gain' : ''}` : ''}${l.result ? ` · ${esc(l.result)}` : ''}<div class="muted">${parts.join(' · ') || 'No marks'}</div></div>
           <button type="button" class="btn small danger" data-act="delLog" data-id="${l.id}">Delete</button></div>`;
       }).join('')}</div>` : '<p class="muted">Nothing logged yet. Tap LOG on a play during the game.</p>'}
     </div>
@@ -1846,6 +1977,7 @@ function renderSetup() {
         <p class="help" style="margin:0">Removing a tag here only removes it from the quick-pick list. Plays keep their tags.</p>
       </div>
     </div>
+    ${linkPanel()}
     <div class="panel"><h3>Backup</h3>
       <p class="help" style="margin:0">Everything lives on this device only. A backup file holds one team (${esc(S.team)}). Save one after big changes and before updating iPadOS. Restoring adds the backup as its own team, so nothing here is overwritten.</p>
       <div class="row-wrap">
@@ -1870,6 +2002,7 @@ function renderSetup() {
       ${TEAMS.list.length > 1 ? `<div class="row-wrap"><button type="button" class="btn danger" data-act="deleteTeam">Delete this team</button><span class="muted">Removes the team completely and switches to another team.</span></div>` : ''}
     </div>
   </div>`;
+  drawLinkQr();
   (async () => {
     try {
       const p = await navigator.storage?.persisted?.();
@@ -1898,7 +2031,7 @@ async function loadTeam(id) {
   ensureGame();
   ui.live.clear(); ui.flips.clear(); ui.tags.clear(); ui.q = ''; ui.lastLineup = {}; ui.statsGame = null; ui.draw.on = false;
   await preload(); await saveNow().catch(() => { });
-  applyTheme(); showBanner();
+  applyTheme(); showBanner(); startLink();
 }
 async function switchTeam(id, quiet) {
   if (id === TEAMS.current && !quiet) return;
@@ -2106,6 +2239,7 @@ const ACT = {
   resetLive: () => {
     const p = playById(ui.playId); const gid = groupForSide(p.side).id;
     if (p.assign?.[gid]) delete p.assign[gid];
+    if (p.fill?.[gid]) delete p.fill[gid];
     for (const sp of p.spots) if (sp.ox != null) { sp.x = sp.ox; sp.y = sp.oy; delete sp.ox; delete sp.oy; }
     save();
     ui.live.delete(ui.playId); ui.flips.delete(ui.playId); ui.sel = null; ui.benchSel = null; renderPlay(); },
@@ -2123,11 +2257,14 @@ const ACT = {
   benchIt: () => { const L = liveFor(playById(ui.playId)); const pl = player(L.lineup[ui.sel]); delete L.lineup[ui.sel]; ui.sel = null; keepSub(`${pl ? firstName(pl) : 'Player'} out`); refreshLive(); },
   sitOut: () => {
     const p = playById(ui.playId); const L = liveFor(p); const pid = L.lineup[ui.sel]; const pl = player(pid); if (!pl) return;
-    pl.out = true; save(); delete L.lineup[ui.sel];
+    pl.out = true; delete L.lineup[ui.sel];
     const snaps = snapCounts(p.side); const onField = new Set(Object.values(L.lineup));
-    const next = S.players.filter(x => x.groupId === L.groupId && !x.out && !onField.has(x.id)).sort((a, b) => (snaps[a.id] || 0) - (snaps[b.id] || 0))[0];
+    const sp = p.spots.find(s => s.key === ui.sel); const safe = p.side === 'D' && isSafetySpot(sp) && p.spots.some(isSafetySpot);
+    const next = S.players.filter(x => x.groupId === L.groupId && !x.out && !onField.has(x.id) && (!safe || x.safety)).sort((a, b) => (snaps[a.id] || 0) - (snaps[b.id] || 0))[0];
     if (next) L.lineup[ui.sel] = next.id;
-    ui.sel = null; refreshLive(); toast(`${pl.name} is out for today`);
+    commitLineup(p, L.groupId, L.lineup);
+    for (const k of [...ui.live.keys()]) if (k !== p.id) ui.live.delete(k);   // other plays pick up the change
+    ui.sel = null; refreshLive(); pushLineup(); toast(`${pl.name} is Out until you mark them In (Roster tab)`);
   },
   mark: b => {
     const d = ui.logDraft; const a = S.actions[d.side].find(x => x.id === b.dataset.a); const pid = b.dataset.p;
@@ -2143,7 +2280,7 @@ const ACT = {
   openImport, impSide: b => { ui.importState.side = b.dataset.side; ui.importState.trim = $('#impTrim')?.checked ?? true; renderImportChoice(); },
   pickFiles: b => pickFiles(b.dataset.kind), commitImport,
   doneEdit: () => { ui.live.delete(ui.edit.playId); const id = ui.edit.playId; ui.edit = null; openPlay(id, true); },
-  setSide: b => { const p = playById(ui.edit.playId); if (p.side === b.dataset.side) return; p.side = b.dataset.side; p.assign = {}; save(); renderEdit(); },
+  setSide: b => { const p = playById(ui.edit.playId); if (p.side === b.dataset.side) return; p.side = b.dataset.side; p.assign = {}; p.fill = {}; save(); renderEdit(); },
   deletePlay: async b => {
     if (!armed(b, 'Tap again to delete')) return;
     const p = playById(ui.edit.playId); S.plays = S.plays.filter(x => x.id !== p.id); await delBlob(p.imgId); await delBlob(p.thumbId);
@@ -2155,7 +2292,7 @@ const ACT = {
   },
   removeSpot: () => {
     const p = playById(ui.edit.playId); const k = ui.edit.selSpot; p.spots = p.spots.filter(s => s.key !== k);
-    Object.values(p.assign || {}).forEach(a => delete a[k]); ui.edit.selSpot = null; save(); renderSpotTokens(); renderEditPanel();
+    [...Object.values(p.assign || {}), ...Object.values(p.fill || {})].forEach(a => delete a[k]); ui.edit.selSpot = null; save(); renderSpotTokens(); renderEditPanel();
   },
   startCrop: () => { ui.edit.crop = {}; ui.edit.selSpot = null; renderEdit(); },
   cancelCrop: () => { ui.edit.crop = null; renderEdit(); },
@@ -2237,7 +2374,7 @@ const ACT = {
   newGame: b => {
     if (!armed(b, 'Start a new game?')) return;
     const g = { id: uid(), date: todayStr(), opp: '' }; S.games.push(g); S.gameId = g.id; ui.statsGame = g.id;
-    S.players.forEach(p => { p.out = false; }); ui.live.clear(); save(); renderStats(); renderScore(); toast('New game started');
+    ui.live.clear(); save(); renderStats(); renderScore(); toast('New game started');
   },
   delLog: b => { if (!armed(b, 'Delete?')) return; const e = S.logs.find(l => l.id === b.dataset.id); if (e) removeLogPoints(e); S.logs = S.logs.filter(l => l.id !== b.dataset.id); save(); renderStats(); renderScore(); },
   delTag: b => { S.tags = S.tags.filter(t => t !== b.dataset.tag); save(); renderSetup(); },
@@ -2257,6 +2394,15 @@ const ACT = {
     await switchTeam(TEAMS.list[0].id, true); toast(`${gone} deleted`);
   },
   teams: () => openTeams(),
+  linkOnBtn: () => { S.link = { ...(S.link?.topic ? S.link : HLink.newCreds()), on: true }; save(); startLink(); renderSetup(); },
+  linkOff: () => { if (S.link) S.link.on = false; save(); startLink(); renderSetup(); toast('Assistant logger off'); },
+  newLink: b => { if (!armed(b, 'Disconnect old phones?')) return; S.link = { ...HLink.newCreds(), on: true }; save(); startLink(); renderSetup(); toast('New code. Have your assistant scan it.'); },
+  shareLink: async () => {
+    const url = logLink();
+    try { if (navigator.share) await navigator.share({ title: `${S.team} logger`, url }); else { await navigator.clipboard.writeText(url); toast('Link copied'); } }
+    catch { /* cancelled */ }
+  },
+  tallyToggle: () => { lsSet('tally', lsGet('tally') === 'off' ? 'on' : 'off'); renderTally(); },
   switchTeam: b => { closeSheet(); switchTeam(b.dataset.id); },
   newTeam: async () => {
     const name = $('#newTeamName').value.trim() || 'New team'; const copy = $('#copyPlays')?.checked;
@@ -2267,7 +2413,7 @@ const ACT = {
     if (copy) {
       for (const p of S.plays) {
         const img = await getBlob(p.imgId), th = await getBlob(p.thumbId);
-        st.plays.push({ ...JSON.parse(JSON.stringify(p)), id: uid(), assign: {}, imgId: img ? await putBlob(img) : null, thumbId: th ? await putBlob(th) : null });
+        st.plays.push({ ...JSON.parse(JSON.stringify(p)), id: uid(), assign: {}, fill: {}, imgId: img ? await putBlob(img) : null, thumbId: th ? await putBlob(th) : null });
       }
     }
     closeSheet(); await createTeam(st, !copy); toast(`${name} created`);
@@ -2292,7 +2438,7 @@ document.addEventListener('change', e => {
     const src = playById(t.value); const p = playById(ui.edit.playId);
     p.spots = src.spots.map(s => ({ ...s })); p.spotsSet = true; ui.edit.selSpot = null; save(); renderEdit(); toast(`Copied spots from ${src.name}`);
   }
-  else if (d.assign) { const p = playById(ui.edit.playId); p.assign ||= {}; p.assign[d.assign] ||= {}; if (t.value) p.assign[d.assign][d.spot] = t.value; else delete p.assign[d.assign][d.spot]; save(); }
+  else if (d.assign) { const p = playById(ui.edit.playId); p.assign ||= {}; p.assign[d.assign] ||= {}; if (t.value) p.assign[d.assign][d.spot] = t.value; else delete p.assign[d.assign][d.spot]; if (p.fill?.[d.assign]) delete p.fill[d.assign][d.spot]; save(); }
   else if (d.team !== undefined) { S.team = t.value.trim() || 'Team'; save(); $('#teamName').textContent = S.team; applyTheme(); }
   else if (d.gname) { group(d.gname).name = t.value.trim() || 'Group'; save(); }
   else if (d.gcolor) { group(d.gcolor).color = t.value; save(); renderRoster(); }
@@ -2308,7 +2454,7 @@ document.addEventListener('change', e => {
       const old = new Map(p.spots.map(x => [x.key, x]));
       p.spots = fresh.map(f => { const o = old.get(f.key); return o ? { ...o, label: f.label } : { ...f }; });
       const keys = new Set(p.spots.map(x => x.key));
-      for (const a of Object.values(p.assign || {})) for (const k of Object.keys(a)) if (!keys.has(k)) delete a[k];
+      for (const a of [...Object.values(p.assign || {}), ...Object.values(p.fill || {})]) for (const k of Object.keys(a)) if (!keys.has(k)) delete a[k];
     });
     ui.live.clear(); save(); renderSetup(); toast('Positions updated on every play');
   }

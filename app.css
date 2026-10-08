@@ -461,3 +461,26 @@ body[data-side="D"] .disc.saf { border-color: #22d3ee !important; box-shadow: 0 
 }
 .token.dragging .ring { transform: translate(-50%, -50%) scale(1.12); }
 .token.rc .tpos { background: var(--rc); color: var(--rc-ink); }
+
+/* touch counts over the play (offense): who still needs a run, throw or catch */
+.tally { position: absolute; top: 6px; left: 8px; z-index: 6; background: color-mix(in srgb, var(--surface) 92%, transparent); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 2px 4px; pointer-events: auto; }
+.tally table { border-collapse: collapse; font: 700 17px/1 var(--display); font-variant-numeric: tabular-nums; }
+.tally th { font-size: 13px; letter-spacing: .06em; color: var(--muted); padding: 3px 5px; }
+.tally td { padding: 3px 6px; text-align: center; }
+.tally td:first-child { text-align: left; letter-spacing: .04em; }
+.tally tr.due td { color: var(--brand); }
+.tally tr.due td:first-child::before { content: '●'; font-size: 9px; vertical-align: 3px; margin-right: 3px; }
+.tally-x, .tally-btn { border: 0; background: none; color: var(--muted); font: 700 14px/1 var(--display); padding: 4px 4px; cursor: pointer; }
+.tally.min { padding: 0; }
+.tally-btn { padding: 8px 10px; letter-spacing: .06em; }
+body.fullplay .tally { top: calc(4px + env(safe-area-inset-top, 0px)); }
+@media (max-width: 640px) { .tally { left: 2px; } .tally table { font-size: 15px; } }
+
+/* assistant logger pairing (Setup) */
+.linkbox { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+.linkbox .qr { width: 200px; height: 200px; background: #fff; border-radius: 8px; padding: 4px; flex: none; }
+.linkbox .qr svg { width: 100%; height: 100%; display: block; }
+.linkside { flex: 1; min-width: 240px; display: grid; gap: 10px; }
+.ldot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); margin-right: 6px; vertical-align: 0; }
+.ldot.live { background: var(--ok); }
+.ldot.offline { background: var(--danger); }
