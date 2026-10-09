@@ -46,3 +46,21 @@ body.logger { overflow-y: auto; overscroll-behavior-y: contain; padding-bottom: 
 .lg-foot .btn { min-height: 60px; font-size: 18px; }
 .lg-foot .lg-log { flex: 1; font: 800 24px/1 var(--display); letter-spacing: .05em; text-transform: uppercase; }
 .lg-foot .btn:disabled { opacity: .45; }
+
+/* 1.15.1: names first; tapped kids move up and open; yards/result sit right under them */
+.lg-in { display: grid; gap: 8px; }
+.lg-hint { border: 2px dashed var(--line); border-radius: 14px; padding: 14px; text-align: center; color: var(--muted); font-weight: 600; }
+.lg-x { margin-left: 10px; width: 40px; height: 40px; border-radius: 50%; border: 2px solid var(--line); background: var(--surface-2); color: var(--ink); font-size: 18px; font-weight: 700; flex: none; cursor: pointer; }
+.lg-res { display: grid; gap: 10px; }
+.lg-res .tagchip { min-height: 44px; }
+.lg-names { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.lg-name {
+  display: flex; align-items: center; gap: 7px; min-height: 54px; padding: 6px 7px; min-width: 0; text-align: left;
+  border: 2px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); font: inherit; cursor: pointer;
+}
+.lg-name .disc { --tk: 30px; border-width: 2px; flex: none; font-size: 12px; }
+.lg-name span { display: grid; min-width: 0; line-height: 1.1; }
+.lg-name b { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lg-name small { font: 700 12px/1.1 var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.lg-name.bench { opacity: .72; }
+@media (min-width: 560px) { .lg-names { grid-template-columns: repeat(4, minmax(0, 1fr)); } }

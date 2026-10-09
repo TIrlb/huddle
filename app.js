@@ -2,7 +2,7 @@
 /* Huddle Playbook — offline sideline app for 5v5 flag football.
    Everything is stored on the device (IndexedDB). No network needed after install. */
 
-const APP_VERSION = '1.15.0';
+const APP_VERSION = '1.15.1';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -983,22 +983,23 @@ function drawLinkQr() {
 }
 
 /* run/throw/catch counts for the group on the field, shown over the play */
-const TALLY = [['R', /^(run|rush)/i, 'Runs'], ['T', /^(pass|throw)/i, 'Throws'], ['C', /^catch/i, 'Catches']];
+const TALLY = [['R', /^(run|rush)/i, 'Runs (incl. Runner 2/3)'], ['P', /^(pass|throw)/i, 'Passes'], ['C', /^catch/i, 'Catches'], ['T', /^target/i, 'Targets']];
+const zeroTally = () => ({ R: 0, P: 0, C: 0, T: 0 });
 function tallyCounts(gid) {
   const ids = side => Object.fromEntries(TALLY.map(([k, rx]) => [k, new Set(S.actions[side].filter(a => rx.test(a.label)).map(a => a.id))]));
   const c = {}; const bySide = { O: ids('O'), D: ids('D') };
   for (const l of S.logs) {
     if (l.gameId !== S.gameId || l.side !== 'O') continue;
-    for (const [aid, pids] of Object.entries(l.marks || {})) for (const [k, set] of Object.entries(bySide.O)) if (set.has(aid)) for (const pid of pids) { (c[pid] ||= { R: 0, T: 0, C: 0 })[k]++; }
+    for (const [aid, pids] of Object.entries(l.marks || {})) for (const [k, set] of Object.entries(bySide.O)) if (set.has(aid)) for (const pid of pids) { (c[pid] ||= zeroTally())[k]++; }
   }
-  return S.players.filter(p => p.groupId === gid && !p.out).map(p => ({ p, n: c[p.id] || { R: 0, T: 0, C: 0 } }));
+  return S.players.filter(p => p.groupId === gid && !p.out).map(p => ({ p, n: c[p.id] || zeroTally() }));
 }
 function renderTally() {
   const box = $('#tally'); if (!box) return;
   const p = playById(ui.playId);
-  if (!p || p.side !== 'O' || lsGet('tally') === 'off') { box.hidden = p?.side !== 'O'; box.className = 'tally min'; box.innerHTML = p?.side === 'O' ? `<button type="button" class="tally-btn" data-act="tallyToggle" aria-label="Show touch counts">R·T·C</button>` : ''; return; }
+  if (!p || p.side !== 'O' || lsGet('tally') === 'off') { box.hidden = p?.side !== 'O'; box.className = 'tally min'; box.innerHTML = p?.side === 'O' ? `<button type="button" class="tally-btn" data-act="tallyToggle" aria-label="Show touch counts">R·P·C·T</button>` : ''; return; }
   const rows = tallyCounts(liveFor(p).groupId);
-  const tot = r => r.n.R + r.n.T + r.n.C; const low = Math.min(...rows.map(tot));
+  const tot = r => TALLY.reduce((a, [k]) => a + r.n[k], 0); const low = Math.min(...rows.map(tot));
   box.hidden = false; box.className = 'tally';
   box.innerHTML = `<table><thead><tr><th><button type="button" class="tally-x" data-act="tallyToggle" aria-label="Hide touch counts">✕</button></th>${TALLY.map(([k, , t]) => `<th title="${t}">${k}</th>`).join('')}</tr></thead>
     <tbody>${rows.map(r => `<tr class="${rows.length > 1 && tot(r) === low ? 'due' : ''}"><td>${esc(initials(r.p))}</td>${TALLY.map(([k]) => `<td>${r.n[k] || '·'}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
