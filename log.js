@@ -85,8 +85,8 @@ function mark(aid, pid) {
   if (!draft.marks[aid].length) delete draft.marks[aid];
   persist(); render();
 }
-// tap a name: that kid moves up into the play with their buttons open
-function pick(pid) { if (!draft.kids.includes(pid)) draft.kids.push(pid); persist(); render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+// tap a name: it lights up where it is and that kid's buttons open under the names (tap again to undo)
+function pick(pid) { if (draft.kids.includes(pid)) return unpick(pid); draft.kids.push(pid); persist(); render(); }
 // ✕ on a kid in the play: back to the list, and their taps are cleared
 function unpick(pid) {
   draft.kids = draft.kids.filter(x => x !== pid);
@@ -130,7 +130,7 @@ function render() {
   const kidById = Object.fromEntries(cur.kids.map(k => [k.id, k]));
   const here = cur.kids.filter(k => !k.out);
   const inPlay = draft.kids.map(id => kidById[id]).filter(Boolean);
-  const rest = [...fieldIds.map(id => kidById[id]).filter(k => k && !k.out), ...here.filter(k => !fieldIds.includes(k.id))].filter(k => !draft.kids.includes(k.id));
+  const everyone = [...fieldIds.map(id => kidById[id]).filter(k => k && !k.out), ...here.filter(k => !fieldIds.includes(k.id))];   // fixed order: field order, then bench
   const where = k => posOf[k.id] || 'bench';
   el.innerHTML = `
     ${pending ? `<button type="button" class="lg-pending" data-act="switch" data-i="pending">Coach is on <b>${esc(pending.play.name)}</b> now. Log this play first, or tap to switch.</button>` : ''}
@@ -139,18 +139,20 @@ function render() {
       <h2>${esc(cur.play?.name || 'Play')}</h2>
       ${hist.length > 1 ? `<div class="lg-hist">${hist.filter(h => h.play?.id !== cur.play?.id).slice(0, 3).map(h => `<button type="button" class="tagchip" data-act="switch" data-id="${esc(h.play.id)}">${esc(h.play.name)}</button>`).join('')}</div>` : ''}
     </div>
+    <div class="lg-pick"><span class="label">Tap who was in on the play</span>
+      <div class="lg-names">${everyone.map(k => `<button type="button" class="lg-name ${posOf[k.id] ? '' : 'bench'} ${draft.kids.includes(k.id) ? 'on' : ''}" data-act="pick" data-p="${esc(k.id)}" aria-pressed="${draft.kids.includes(k.id)}">${disc(k, color)}<span><b>${esc(k.n)}</b><small>${esc(where(k))}</small></span></button>`).join('')}</div>
+    </div>
     <div class="lg-in">
       ${inPlay.length ? inPlay.map(k => `<div class="lg-kid has">
         <div class="lg-who">${disc(k, color)}<b>${esc(k.n)}</b><span class="muted">${esc(where(k))}</span>
           <button type="button" class="lg-x" data-act="unpick" data-p="${esc(k.id)}" aria-label="Remove ${esc(k.n)} from this play">✕</button></div>
         <div class="lg-acts" style="--n:${cur.acts.length}">${cur.acts.map(a => `<button type="button" class="lg-act ${(draft.marks[a.id] || []).includes(k.id) ? 'on' : ''}" data-act="mark" data-a="${esc(a.id)}" data-p="${esc(k.id)}">${esc(a.label)}</button>`).join('')}</div>
-      </div>`).join('') : '<div class="lg-hint">Tap the kids who were in on the play.</div>'}
+      </div>`).join('') : ''}
     </div>
     <div class="lg-res">
       <div class="results"><span class="label">Yards</span>${(cur.gains || []).map(g => `<button type="button" class="tagchip ${draft.gain === g ? 'on' : ''}" data-act="gain" data-v="${esc(g)}">${esc(g)}</button>`).join('')}</div>
       <div class="results"><span class="label">Result</span>${(cur.res || []).map(r => `<button type="button" class="tagchip ${draft.result === r ? 'on' : ''}" data-act="result" data-v="${esc(r)}">${esc(r)}${POINTS(cur.side, r) ? ' ★' : ''}</button>`).join('')}</div>
     </div>
-    ${rest.length ? `<div class="lg-names">${rest.map(k => `<button type="button" class="lg-name ${posOf[k.id] ? '' : 'bench'}" data-act="pick" data-p="${esc(k.id)}">${disc(k, color)}<span><b>${esc(k.n)}</b><small>${esc(where(k))}</small></span></button>`).join('')}</div>` : ''}
     <div class="lg-recent" id="lgRecent"></div>
     <div class="lg-foot">
       <button type="button" class="btn" data-act="clear" ${dirty() ? '' : 'disabled'}>Clear</button>

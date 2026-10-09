@@ -64,3 +64,21 @@ body.logger { overflow-y: auto; overscroll-behavior-y: contain; padding-bottom: 
 .lg-name small { font: 700 12px/1.1 var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .lg-name.bench { opacity: .72; }
 @media (min-width: 560px) { .lg-names { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
+/* 1.15.2: names grid stays put at the top; picked kids light up in place, their buttons open below */
+.lg-pick { display: grid; gap: 6px; }
+.lg-name.on { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 14%, var(--surface)); opacity: 1; }
+.lg-name.on b { color: var(--brand); }
+.lg-in:empty { display: none; }
+.lg-kid { padding: 6px 8px 8px; gap: 6px; }
+.lg-who .disc { --tk: 32px; }
+.lg-x { width: 36px; height: 36px; font-size: 16px; }
+.lg-act { min-height: 44px; font-size: 16px; }
+.lg-res .results { gap: 6px; }
+.lg-res .tagchip { min-height: 40px; font-size: 15px; padding: 0 12px; }
+/* yards / result: one row of equal buttons each, label above, so two open kids + results fit on one screen */
+.lg-res { gap: 8px; }
+.lg-res .results { display: grid; grid-template-columns: repeat(auto-fit, minmax(62px, 1fr)); gap: 5px; align-items: stretch; }
+.lg-res .results .label { grid-column: 1 / -1; }
+.lg-res .tagchip { min-height: 42px; padding: 2px 2px; font-size: 14px; letter-spacing: -.01em; line-height: 1.05; white-space: normal; border-radius: 10px; justify-content: center; text-align: center; }
+.lg-play h2 { font-size: 28px; }
